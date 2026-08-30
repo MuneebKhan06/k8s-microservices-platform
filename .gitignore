@@ -1,0 +1,29 @@
+# Kubernetes / Helm
+*.tgz
+.kube/
+kubeconfig*
+*.kubeconfig
+
+# Secrets — never commit these
+*.env
+.env.*
+secrets.yaml
+*-secret.yaml
+values.prod.yaml
+values.staging.yaml
+
+# Python (chaos scripts, submit_jobs.py etc)
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS/editor
+.DS_Store
+.vscode/
+*.swp
+
+# Terraform state (if you add IaC later to this repo)
+*.tfstate
+*.tfstate.backup
+.terraform/
