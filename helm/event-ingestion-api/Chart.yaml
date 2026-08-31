@@ -1,0 +1,20 @@
+apiVersion: v2
+name: event-ingestion-api
+description: Kafka backed event ingestion API from Project 1, deployed to the platform namespace
+type: application
+
+# version is the chart version and moves whenever the templates change.
+# appVersion tracks the image tag of the application itself. They are
+# deliberately separate: fixing a probe timing in a template is a chart
+# change and should not imply a new application build.
+version: 0.1.0
+appVersion: "0.1.0"
+
+keywords:
+  - kafka
+  - ingestion
+  - fastapi
+
+maintainers:
+  - name: Muneeb Sami Khan
+    email: muneebsamikhan@gmail.com

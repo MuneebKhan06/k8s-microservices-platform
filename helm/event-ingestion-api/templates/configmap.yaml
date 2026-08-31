@@ -1,0 +1,31 @@
+# Non secret configuration. Everything here is readable by anyone with get
+# on ConfigMaps in the platform namespace, so credentials live in the Secret
+# instead.
+#
+# Service addresses are fully qualified because the application runs in
+# platform and Kafka and Postgres run in infra. A bare "kafka" would resolve
+# against platform and fail.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "event-ingestion-api.fullname" . }}-config
+  labels:
+    {{- include "event-ingestion-api.labels" . | nindent 4 }}
+data:
+  API_HOST: "0.0.0.0"
+  API_PORT: {{ .Values.service.targetPort | quote }}
+  LOG_LEVEL: {{ .Values.config.logLevel | quote }}
+
+  KAFKA_BOOTSTRAP_SERVERS: {{ .Values.config.kafka.bootstrapServers | quote }}
+  KAFKA_TOPIC_EVENTS_RAW: {{ .Values.config.kafka.topicEventsRaw | quote }}
+  KAFKA_TOPIC_EVENTS_DLQ: {{ .Values.config.kafka.topicEventsDlq | quote }}
+  KAFKA_CONSUMER_GROUP: {{ .Values.config.kafka.consumerGroup | quote }}
+  KAFKA_PRODUCER_ACKS: {{ .Values.config.kafka.producerAcks | quote }}
+
+  ENABLE_DUPLICATE_PRECHECK: {{ .Values.config.enableDuplicatePrecheck | quote }}
+
+  POSTGRES_HOST: {{ .Values.config.postgres.host | quote }}
+  POSTGRES_PORT: {{ .Values.config.postgres.port | quote }}
+  POSTGRES_DB: {{ .Values.config.postgres.database | quote }}
+
+  STREAM_MAX_CLIENTS: {{ .Values.config.streamMaxClients | quote }}

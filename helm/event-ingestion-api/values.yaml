@@ -1,0 +1,131 @@
+# Defaults for event-ingestion-api. These are the production shaped values.
+# values.dev.yaml trims them down for a single node dev install.
+
+# The cluster nodes cannot pull from the workstation Docker daemon, so
+# images come from the in cluster registry running on the master VM.
+# Replace registry with the master IP before the first install.
+image:
+  registry: "REGISTRY_HOST:5000"
+  repository: event-ingestion-api
+  tag: ""            # empty falls back to Chart.appVersion
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# Floor of 2 so a single pod failure never drops the service to zero while
+# the replacement schedules. The HPA takes over from here.
+replicaCount: 2
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8000
+
+# Sized from observed usage, not guessed. Request sits at the p50 seen under
+# load, limit at roughly 2x the p95. Request below limit on purpose: the pod
+# is not at peak most of the time, and reserving peak wastes node capacity.
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+# Three probes, three jobs. See Decision 5 in the README.
+probes:
+  # Buys a slow start time before liveness begins. 30 failures at 10s each
+  # gives the app five minutes to reach Kafka and run migrations, which is
+  # generous but costs nothing when startup is fast.
+  startup:
+    enabled: true
+    path: /health
+    periodSeconds: 10
+    failureThreshold: 30
+
+  # Pulls the pod out of the Service endpoints when it cannot serve.
+  # /health checks Kafka and Postgres and returns 503 when either is down,
+  # which is exactly the right behaviour for readiness.
+  readiness:
+    enabled: true
+    path: /health
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+  # Deliberately a TCP check and not an HTTP call to /health.
+  # /health returns 503 when Postgres is unreachable. Wiring liveness to it
+  # would restart every replica at once during a database blip and turn a
+  # recoverable outage into a crash loop. A dedicated /health/live endpoint
+  # that only reports process health belongs in the Project 1 repo, and once
+  # it exists this switches to httpGet.
+  liveness:
+    enabled: true
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+# Horizontal Pod Autoscaler. Consumer lag rather than CPU: this service can
+# sit near idle CPU while falling badly behind on the topic, so CPU would
+# scale up only after the backlog has already built.
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 8
+  # Requires prometheus-adapter to publish kafka_consumer_lag on the
+  # external metrics API. Verify with:
+  #   kubectl get --raw "/apis/external.metrics.k8s.io/v1beta1" | jq .
+  # If the metric is absent the HPA reports <unknown> and never scales.
+  externalMetric:
+    name: kafka_consumer_lag
+    topic: events.raw
+    targetAverageValue: "1000"
+
+# Non secret application config, rendered into a ConfigMap.
+config:
+  logLevel: INFO
+  kafka:
+    bootstrapServers: kafka.infra.svc.cluster.local:9092
+    topicEventsRaw: events.raw
+    topicEventsDlq: events.dlq
+    consumerGroup: event-processors
+    producerAcks: "1"
+  # Costs one database read per request but answers duplicates with 409
+  # before anything is published. Set false to keep the database off the
+  # request path and let the consumer deduplicate instead.
+  enableDuplicatePrecheck: "true"
+  postgres:
+    host: postgresql.infra.svc.cluster.local
+    port: "5432"
+    database: events_db
+  streamMaxClients: "20"
+
+# Secret values. Placeholders only in this file. Real values come from
+# --set on install or, properly, from External Secrets Operator.
+secrets:
+  postgresUser: events_user
+  postgresPassword: "CHANGEME"
+
+# Rolling update tuned for zero downtime. maxUnavailable 0 means a new pod
+# must pass readiness before an old one is removed, so capacity never dips
+# below the current replica count during a deploy.
+strategy:
+  maxUnavailable: 0
+  maxSurge: 1
+
+# Give the app time to finish in flight requests and commit Kafka offsets
+# before SIGKILL.
+terminationGracePeriodSeconds: 30
+
+# Keep replicas off the same node where possible. Soft rather than hard so
+# a two worker cluster can still schedule beyond two replicas.
+podAntiAffinity:
+  enabled: true
+
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
