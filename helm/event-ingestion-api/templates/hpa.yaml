@@ -1,0 +1,60 @@
+{{- if .Values.autoscaling.enabled }}
+# Scales on Kafka consumer lag rather than CPU.
+#
+# CPU is the wrong signal for this service. A consumer can sit near idle CPU
+# while falling steadily behind on the topic, so a CPU based HPA only reacts
+# once the backlog is already large. Lag is the thing that actually matters
+# and it moves first.
+#
+# This depends on prometheus-adapter publishing kafka_consumer_lag on the
+# external metrics API. Confirm it is there before trusting this:
+#   kubectl get --raw "/apis/external.metrics.k8s.io/v1beta1" | jq .
+# A missing metric does not fail loudly. The HPA reports <unknown> for the
+# current value and quietly never scales.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "event-ingestion-api.fullname" . }}
+  labels:
+    {{- include "event-ingestion-api.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "event-ingestion-api.fullname" . }}
+  minReplicas: {{ .Values.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.autoscaling.maxReplicas }}
+  metrics:
+    - type: External
+      external:
+        metric:
+          name: {{ .Values.autoscaling.externalMetric.name }}
+          selector:
+            matchLabels:
+              topic: {{ .Values.autoscaling.externalMetric.topic | quote }}
+        target:
+          # AverageValue divides the metric across current replicas, so the
+          # target reads as "messages of lag per pod". Value instead of
+          # AverageValue would compare total lag against the threshold and
+          # scale to max on the first burst.
+          type: AverageValue
+          averageValue: {{ .Values.autoscaling.externalMetric.targetAverageValue | quote }}
+  behavior:
+    scaleUp:
+      # Short window because lag is the signal we want to react to quickly.
+      stabilizationWindowSeconds: 30
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 60
+    scaleDown:
+      # Five minutes, matching the Kubernetes default. Kept explicit rather
+      # than inherited so the number is visible. Draining a backlog often
+      # comes in waves, and a fast scale down removes the pods that are about
+      # to be needed again, which produces thrashing.
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 50
+          periodSeconds: 60
+{{- end }}

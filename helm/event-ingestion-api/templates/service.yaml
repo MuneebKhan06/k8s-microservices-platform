@@ -1,0 +1,46 @@
+# ClusterIP because nothing outside the cluster talks to this service
+# directly. Public traffic arrives at the Nginx ingress and is routed to
+# api-gateway, which is the only service with a route from outside.
+#
+# The port stays 80 while the container listens on 8000. Callers use a
+# stable well known port and the container port can move without every
+# caller's config changing.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "event-ingestion-api.fullname" . }}
+  labels:
+    {{- include "event-ingestion-api.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "event-ingestion-api.selectorLabels" . | nindent 4 }}
+---
+# A second headless Service that exists only for Prometheus to scrape.
+#
+# Scraping through the main ClusterIP would hit one arbitrary pod per scrape
+# and the metrics would jump between replicas, making a per instance rate
+# meaningless. Headless resolves to every pod address instead, so the
+# ServiceMonitor gets one target per replica.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "event-ingestion-api.fullname" . }}-metrics
+  labels:
+    {{- include "event-ingestion-api.labels" . | nindent 4 }}
+    app.kubernetes.io/component: metrics
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - name: metrics
+      port: {{ .Values.service.targetPort }}
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "event-ingestion-api.selectorLabels" . | nindent 4 }}

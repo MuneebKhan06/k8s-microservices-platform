@@ -104,6 +104,11 @@ config:
     database: events_db
   streamMaxClients: "20"
 
+# Name of a Secret that already exists in the namespace. Set this and the
+# chart stops rendering its own Secret, which is how an External Secrets
+# Operator managed Secret gets wired in later without touching templates.
+existingSecret: ""
+
 # Secret values. Placeholders only in this file. Real values come from
 # --set on install or, properly, from External Secrets Operator.
 secrets:
