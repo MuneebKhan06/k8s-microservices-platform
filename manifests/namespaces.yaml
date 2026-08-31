@@ -1,0 +1,35 @@
+# Three namespaces instead of one. The split is what makes RBAC and
+# NetworkPolicy possible later: you cannot grant a developer edit access to
+# application pods without also handing them the database if everything
+# lives in the same namespace.
+#
+# Cross-namespace lookups need the FQDN, so application config points at
+# postgresql.infra.svc.cluster.local rather than a bare service name.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: platform
+  labels:
+    app.kubernetes.io/part-of: k8s-microservices-platform
+    tier: application
+---
+# Stateful services live here on their own. Nothing in platform or
+# monitoring gets write access to this namespace once NetworkPolicy lands.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: infra
+  labels:
+    app.kubernetes.io/part-of: k8s-microservices-platform
+    tier: data
+---
+# Prometheus, Grafana, prometheus-adapter and the Netdata DaemonSet.
+# These need read access across every namespace to scrape, and no write
+# access anywhere.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+  labels:
+    app.kubernetes.io/part-of: k8s-microservices-platform
+    tier: observability
