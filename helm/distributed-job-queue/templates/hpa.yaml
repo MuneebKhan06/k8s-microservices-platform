@@ -1,0 +1,115 @@
+# Two HPAs, two different signals, and the difference is the point.
+#
+# The platform README's component table lists Redis stream depth for both
+# rows of this project. That is right for the worker and wrong for the api,
+# and this chart deliberately deviates.
+#
+# The api accepts HTTP requests and enqueues onto Redis. It is a producer.
+# Queue depth tells you whether the worker fleet is keeping up, which is a
+# fact about the consumers, not about whether the api needs more capacity.
+# Scaling the api on it produces two wrong behaviours: the api scales up
+# while sitting idle whenever workers fall behind, and it stays flat during
+# a genuine request spike whenever the queue happens to be short. Request
+# rate is what the api actually responds to, and is the same signal the
+# api-gateway chart uses.
+{{- if .Values.api.autoscaling.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "distributed-job-queue.fullname" . }}-api
+  labels:
+    {{- include "distributed-job-queue.apiSelectorLabels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "distributed-job-queue.fullname" . }}-api
+  minReplicas: {{ .Values.api.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.api.autoscaling.maxReplicas }}
+  metrics:
+    - type: External
+      external:
+        metric:
+          name: {{ .Values.api.autoscaling.externalMetric.name }}
+          selector:
+            matchLabels:
+              service: {{ .Values.api.autoscaling.externalMetric.target | quote }}
+        target:
+          type: AverageValue
+          averageValue: {{ .Values.api.autoscaling.externalMetric.targetAverageValue | quote }}
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 30
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 50
+          periodSeconds: 60
+{{- end }}
+{{- if .Values.worker.autoscaling.enabled }}
+---
+# The worker is the one component in the platform where queue depth is
+# unambiguously the right signal: backlog growing means more consumers are
+# needed, full stop.
+#
+# The metric is a single summed series across jobs.high, jobs.normal and
+# jobs.low, not one series per stream. HPA evaluates one value per external
+# metric query, so the sum has to be done in the prometheus-adapter rule
+# (Day 9 work). Three separate metrics here would let a deep low priority
+# backlog and an empty high priority stream cancel each other out in ways
+# that are hard to reason about.
+#
+# Scale up is more aggressive than the api's: doubling every 30s, because
+# the cost of being slow to add workers is a backlog that keeps growing
+# while you wait, whereas an over-provisioned worker that finds an empty
+# stream just blocks on XREADGROUP and costs almost nothing.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "distributed-job-queue.fullname" . }}-worker
+  labels:
+    {{- include "distributed-job-queue.workerSelectorLabels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "distributed-job-queue.fullname" . }}-worker
+  minReplicas: {{ .Values.worker.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.worker.autoscaling.maxReplicas }}
+  metrics:
+    - type: External
+      external:
+        metric:
+          name: {{ .Values.worker.autoscaling.externalMetric.name }}
+          selector:
+            matchLabels:
+              queue: {{ .Values.worker.autoscaling.externalMetric.queue | quote }}
+        target:
+          # AverageValue, so the target reads as "queued jobs per worker".
+          type: AverageValue
+          averageValue: {{ .Values.worker.autoscaling.externalMetric.targetAverageValue | quote }}
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 30
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 30
+    scaleDown:
+      # Five minutes, and it matters more here than anywhere else in the
+      # platform. A worker removed mid-job does not lose the job, but it
+      # does leave the message unacknowledged until another worker reclaims
+      # it after STALE_AFTER_MS, which shows up as a latency spike with no
+      # obvious cause. Draining slowly avoids paying that repeatedly during
+      # the trough between bursts.
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 60
+{{- end }}
