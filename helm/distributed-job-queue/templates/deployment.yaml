@@ -1,0 +1,120 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "distributed-job-queue.fullname" . }}-api
+  labels:
+    {{- include "distributed-job-queue.apiSelectorLabels" . | nindent 4 }}
+spec:
+  {{- if not .Values.api.autoscaling.enabled }}
+  replicas: {{ .Values.api.replicaCount }}
+  {{- end }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: {{ .Values.strategy.maxUnavailable }}
+      maxSurge: {{ .Values.strategy.maxSurge }}
+  selector:
+    matchLabels:
+      {{- include "distributed-job-queue.apiSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- if not .Values.existingSecret }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "distributed-job-queue.apiSelectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: api
+          image: "{{ .Values.image.registry }}/{{ .Values.image.api.repository }}:{{ .Values.image.api.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # Skips straight to uvicorn. The image's own CMD runs
+          # `alembic upgrade head` first; that step now runs once as the
+          # pre-install/pre-upgrade migration Job (templates/migration-job.yaml)
+          # so N replicas starting together do not run it N times concurrently.
+          command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          ports:
+            - name: http
+              containerPort: {{ .Values.api.service.targetPort }}
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ include "distributed-job-queue.fullname" . }}-config
+            - secretRef:
+                name: {{ .Values.existingSecret | default (printf "%s-secret" (include "distributed-job-queue.fullname" .)) }}
+          {{- if .Values.api.probes.startup.enabled }}
+          startupProbe:
+            httpGet:
+              path: {{ .Values.api.probes.startup.path }}
+              port: http
+            periodSeconds: {{ .Values.api.probes.startup.periodSeconds }}
+            failureThreshold: {{ .Values.api.probes.startup.failureThreshold }}
+          {{- end }}
+          {{- if .Values.api.probes.readiness.enabled }}
+          # See the note in values.yaml: /health always returns 200, so this
+          # only proves uvicorn is answering, not that Redis or Postgres are
+          # reachable. Kept anyway because it is still real signal: a hung
+          # or not-yet-started process is correctly kept out of the Service.
+          # It is just not the whole signal readiness is supposed to be.
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.api.probes.readiness.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.api.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.api.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.api.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.api.probes.readiness.failureThreshold }}
+          {{- end }}
+          {{- if .Values.api.probes.liveness.enabled }}
+          # httpGet is safe here, unlike event-ingestion-api's liveness probe.
+          # /health on this service is documented to always return 200 while
+          # the process is alive regardless of dependency state, which is
+          # exactly the contract a liveness probe wants.
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.api.probes.liveness.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.api.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.api.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.api.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.api.probes.liveness.failureThreshold }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.api.resources | nindent 12 }}
+      {{- if .Values.podAntiAffinity.enabled }}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    {{- include "distributed-job-queue.apiSelectorLabels" . | nindent 20 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

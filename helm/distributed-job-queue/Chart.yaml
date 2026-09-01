@@ -1,0 +1,20 @@
+apiVersion: v2
+name: distributed-job-queue
+description: Redis Streams backed job queue from Project 2, API and worker deployed together
+type: application
+
+# version is the chart version, appVersion is the application image tag.
+# Kept separate for the same reason as the event-ingestion-api chart: a
+# probe timing fix here should not imply a new application build.
+version: 0.1.0
+appVersion: "0.1.0"
+
+keywords:
+  - redis-streams
+  - job-queue
+  - fastapi
+  - worker
+
+maintainers:
+  - name: Muneeb Sami Khan
+    email: muneebsamikhan@gmail.com

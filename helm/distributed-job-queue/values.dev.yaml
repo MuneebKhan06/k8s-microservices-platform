@@ -1,0 +1,85 @@
+# Dev overrides. Only keys that differ from values.yaml belong here.
+#
+#   helm upgrade --install distributed-job-queue ./helm/distributed-job-queue \
+#     -n platform -f helm/distributed-job-queue/values.dev.yaml
+
+image:
+  # Always pull, because the dev tag is overwritten in the registry on every
+  # rebuild and IfNotPresent would keep serving whatever the node cached the
+  # first time.
+  pullPolicy: Always
+  api:
+    tag: "dev"
+  worker:
+    tag: "dev"
+
+api:
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 96Mi
+    limits:
+      cpu: 250m
+      memory: 192Mi
+  probes:
+    startup:
+      # Lower than production's 30. Migrations no longer run in this
+      # container, so the only thing being waited on is uvicorn binding a
+      # port. If that has not happened in a minute the container is broken
+      # and the restart is the signal you want.
+      failureThreshold: 6
+    liveness:
+      initialDelaySeconds: 10
+  autoscaling:
+    enabled: false
+
+worker:
+  # One worker in dev. Two exists in production so a single pod failure does
+  # not stop the queue draining entirely; while iterating, one is enough and
+  # makes the logs readable.
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+  probes:
+    startup:
+      failureThreshold: 6
+    liveness:
+      initialDelaySeconds: 10
+  autoscaling:
+    enabled: false
+  # 15s instead of 60s. Waiting a full minute for a worker to drain on every
+  # redeploy is the slowest part of the dev loop, and a duplicated test job
+  # costs nothing here.
+  terminationGracePeriodSeconds: 15
+
+# Still enabled in dev, and deliberately so. The migration hook is the part
+# of this chart most likely to be wrong, and a dev install that skipped it
+# would not exercise the thing most worth exercising. It also means a dev
+# database gets schema changes the same way production does.
+migration:
+  enabled: true
+
+config:
+  logLevel: DEBUG
+  # Smaller batches so the effect of a change shows up in the logs within a
+  # poll or two rather than being averaged across ten jobs.
+  worker:
+    batchSize: "5"
+  # Trimmed retention. The dev Redis has no memory headroom to speak of and
+  # nobody is reading a week of dev job history.
+  streamMaxLength: "5000"
+  dlqMaxLength: "1000"
+
+# Nothing to spread across on a single worker dev cluster, and leaving it on
+# only adds noise to kubectl describe.
+podAntiAffinity:
+  enabled: false
+
+secrets:
+  postgresPassword: "devpassword"

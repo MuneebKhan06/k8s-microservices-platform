@@ -1,0 +1,209 @@
+# Defaults for distributed-job-queue. Two Deployments share this file: the
+# HTTP api and the worker. values.dev.yaml trims both down for a single node
+# dev install.
+
+image:
+  registry: "REGISTRY_HOST:5000"
+  # Dockerfile.api and Dockerfile.worker build to separate images. Sharing
+  # one repository with a tag per component would work too, but separate
+  # repositories mean the worker image can be rebuilt and pushed without
+  # bumping the api's tag, which matters once they version independently.
+  api:
+    repository: distributed-job-queue-api
+    tag: ""          # empty falls back to Chart.appVersion
+  worker:
+    repository: distributed-job-queue-worker
+    tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+api:
+  # Matches the README's component table: 2 min, 8 max for the API.
+  replicaCount: 2
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+  service:
+    type: ClusterIP
+    port: 80
+    targetPort: 8000
+
+  # /health on this service always returns HTTP 200, even when Redis or
+  # Postgres is unreachable. Degraded state is reported in the JSON body,
+  # not the status code. That is the right call for liveness (a dependency
+  # outage should not get the process killed) and the wrong endpoint for
+  # readiness, because kubelet reads the status code only and never sees the
+  # body. As it stands, readinessProbe below cannot pull a degraded pod out
+  # of the Service; it can only detect that uvicorn itself is not answering.
+  # The fix is a dedicated /health/ready in the Project 2 repo that returns
+  # 503 when redis_ok or database_ok is false, mirroring the /health/live
+  # split Project 1 needs for the opposite reason. Tracked, not fixed here.
+  probes:
+    startup:
+      enabled: true
+      path: /health
+      periodSeconds: 10
+      # Higher than event-ingestion-api's startup threshold because this
+      # container runs `alembic upgrade head` before uvicorn binds the port
+      # at all (see the migration Job note below for why that step is being
+      # moved out of this container). Left generous in case it is ever
+      # reverted to the image's own CMD.
+      failureThreshold: 30
+    readiness:
+      enabled: true
+      path: /health
+      initialDelaySeconds: 5
+      periodSeconds: 5
+      timeoutSeconds: 3
+      failureThreshold: 3
+    liveness:
+      enabled: true
+      path: /health
+      initialDelaySeconds: 15
+      periodSeconds: 10
+      timeoutSeconds: 3
+      failureThreshold: 3
+
+  # HTTP request rate rather than the Redis stream depth the platform README
+  # table lists for this row. The API's job is to accept requests and enqueue
+  # onto Redis; queue depth is a signal about the worker fleet keeping up,
+  # not about whether the API itself needs more capacity. Scaling the API on
+  # a number it does not control would mean it scales up while sitting idle
+  # whenever workers fall behind, and stays flat under a genuine request
+  # spike if the queue happens to be short. Request rate is the api-gateway
+  # pattern and is the correct one here too. Deviation from the table noted
+  # in DEVLOG.
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 8
+    externalMetric:
+      name: http_requests_per_second
+      target: distributed-job-queue-api
+      targetAverageValue: "50"
+
+worker:
+  # 2 min, 12 max per the README table. Highest ceiling of any component:
+  # a worker does strictly more work per replica than the API does per
+  # request, and it is the thing standing between a burst and a growing
+  # backlog.
+  replicaCount: 2
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 512Mi
+
+  # The worker has no HTTP server. Its only listening port is the Prometheus
+  # metrics port, and that port is opened after ensure_consumer_groups()
+  # succeeds, which is to say after Redis is reachable, not before. A TCP
+  # check on it is
+  # therefore not a weak substitute for a real health check here, it is an
+  # accurate one: if the port accepts, Redis was reachable at startup.
+  # It cannot detect Redis becoming unreachable later, which the worker's
+  # own retry loop is what handles.
+  metricsPort: 9100
+  probes:
+    startup:
+      enabled: true
+      periodSeconds: 10
+      failureThreshold: 18
+    readiness:
+      enabled: true
+      initialDelaySeconds: 5
+      periodSeconds: 5
+      failureThreshold: 3
+    liveness:
+      enabled: true
+      initialDelaySeconds: 15
+      periodSeconds: 10
+      failureThreshold: 3
+
+  # Redis stream depth, summed across all three priority streams
+  # (jobs.high, jobs.normal, jobs.low). This is the one HPA in the platform
+  # that genuinely wants a queue depth signal: more backlog is a direct,
+  # unambiguous reason to run more workers.
+  #
+  # The metric name below is what prometheus-adapter must be configured to
+  # publish (Day 9 work): a single series that is the sum of XLEN across the
+  # three work streams, not one series per stream. HPA reads one external
+  # metric value per query, so summing has to happen in the adapter's PromQL
+  # rule, not in the HPA spec.
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 12
+    externalMetric:
+      name: redis_stream_length_total
+      queue: jobs
+      targetAverageValue: "50"
+
+  # Longer than the api's. A worker mid-job on SIGTERM finishes the current
+  # batch before exiting; cutting that off early is how a job ends up
+  # retried even though it actually completed.
+  terminationGracePeriodSeconds: 60
+
+# Runs `alembic upgrade head` once as a Helm hook Job before any api pod is
+# created or updated, instead of running it inside the api container's start
+# command. With replicaCount 2+, letting each pod run its own migration on
+# start means two pods racing to apply the same migration concurrently, and
+# alembic takes no lock. That happens on every fresh install and on any
+# rolling update with maxSurge above zero. A single hook Job that must succeed before the
+# Deployment is touched removes the race entirely.
+migration:
+  enabled: true
+  backoffLimit: 2
+  activeDeadlineSeconds: 300
+
+# Non secret application config, rendered into a ConfigMap shared by both
+# Deployments and the migration Job.
+config:
+  logLevel: INFO
+  postgres:
+    host: postgresql.infra.svc.cluster.local
+    port: "5432"
+    database: jobqueue
+  redis:
+    host: redis.infra.svc.cluster.local
+    port: "6379"
+    db: "0"
+  worker:
+    batchSize: "10"
+    blockMs: "5000"
+    highPriorityWeight: "3"
+  retry:
+    baseDelaySeconds: "1"
+    maxDelaySeconds: "60"
+    maxAttempts: "5"
+  streamMaxLength: "100000"
+  dlqMaxLength: "50000"
+
+# Name of a Secret that already exists in the namespace. Set this and the
+# chart stops rendering its own Secret, the same escape hatch used in the
+# event-ingestion-api chart for wiring in an External Secrets Operator
+# managed Secret later.
+existingSecret: ""
+
+secrets:
+  postgresUser: jobqueue
+  postgresPassword: "CHANGEME"
+
+strategy:
+  maxUnavailable: 0
+  maxSurge: 1
+
+podAntiAffinity:
+  enabled: true
+
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
