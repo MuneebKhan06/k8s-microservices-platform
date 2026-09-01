@@ -1,0 +1,128 @@
+# The worker is a Deployment, not a StatefulSet or a Job.
+#
+# Redis Streams consumer groups assign each message to exactly one consumer,
+# so workers need no coordination, no stable identity, and no ordering
+# between them. Scaling out is purely "run more of these", which is the case
+# a Deployment exists for. A StatefulSet would buy stable pod names that
+# nothing here reads, at the cost of slower ordered rollouts.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "distributed-job-queue.fullname" . }}-worker
+  labels:
+    {{- include "distributed-job-queue.workerSelectorLabels" . | nindent 4 }}
+spec:
+  {{- if not .Values.worker.autoscaling.enabled }}
+  replicas: {{ .Values.worker.replicaCount }}
+  {{- end }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: {{ .Values.strategy.maxUnavailable }}
+      maxSurge: {{ .Values.strategy.maxSurge }}
+  selector:
+    matchLabels:
+      {{- include "distributed-job-queue.workerSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- if not .Values.existingSecret }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "distributed-job-queue.workerSelectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # 60s by default rather than the api's 30s. On SIGTERM the worker
+      # finishes its current batch before exiting. Killing it earlier means
+      # the in flight message is never acknowledged, so another worker
+      # reclaims it after STALE_AFTER_MS and runs it a second time. The job
+      # ran fine, it just gets to run twice, which is the kind of duplicate
+      # that is very hard to explain afterwards.
+      terminationGracePeriodSeconds: {{ .Values.worker.terminationGracePeriodSeconds }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: worker
+          image: "{{ .Values.image.registry }}/{{ .Values.image.worker.repository }}:{{ .Values.image.worker.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.worker.metricsPort }}
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ include "distributed-job-queue.fullname" . }}-config
+            - secretRef:
+                name: {{ .Values.existingSecret | default (printf "%s-secret" (include "distributed-job-queue.fullname" .)) }}
+          # All three probes are TCP checks on the metrics port, because the
+          # worker runs no HTTP server other than the Prometheus listener.
+          #
+          # This is a better signal than it looks. worker/main.py calls
+          # ensure_consumer_groups() before start_metrics_server(), so the
+          # port only accepts once Redis has been reached and the consumer
+          # groups exist. A worker that cannot reach Redis never opens the
+          # port and never passes startup.
+          #
+          # What it cannot see is Redis going away later: the port stays
+          # open and the worker's own retry loop handles reconnection. That
+          # is the correct division of responsibility, but it does mean these
+          # probes are a startup gate rather than a continuous health check.
+          {{- if .Values.worker.probes.startup.enabled }}
+          startupProbe:
+            tcpSocket:
+              port: metrics
+            periodSeconds: {{ .Values.worker.probes.startup.periodSeconds }}
+            failureThreshold: {{ .Values.worker.probes.startup.failureThreshold }}
+          {{- end }}
+          {{- if .Values.worker.probes.readiness.enabled }}
+          readinessProbe:
+            tcpSocket:
+              port: metrics
+            initialDelaySeconds: {{ .Values.worker.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.worker.probes.readiness.periodSeconds }}
+            failureThreshold: {{ .Values.worker.probes.readiness.failureThreshold }}
+          {{- end }}
+          {{- if .Values.worker.probes.liveness.enabled }}
+          livenessProbe:
+            tcpSocket:
+              port: metrics
+            initialDelaySeconds: {{ .Values.worker.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.worker.probes.liveness.periodSeconds }}
+            failureThreshold: {{ .Values.worker.probes.liveness.failureThreshold }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.worker.resources | nindent 12 }}
+      {{- if .Values.podAntiAffinity.enabled }}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    {{- include "distributed-job-queue.workerSelectorLabels" . | nindent 20 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
