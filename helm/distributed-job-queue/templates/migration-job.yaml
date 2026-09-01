@@ -1,0 +1,73 @@
+# Runs `alembic upgrade head` exactly once before the api Deployment is
+# created or updated. See values.yaml for why this exists: the image's own
+# CMD runs migrations inline in every container, and two api pods starting
+# together — a fresh install with replicaCount 2, or a rolling update with
+# maxSurge above zero — would otherwise run alembic concurrently with no
+# lock between them.
+#
+# pre-install and pre-upgrade both point at this hook, and Helm blocks the
+# rest of the release until the Job reports success. If migrations fail, the
+# api Deployment is never touched, which is the point: a broken migration
+# should not roll out to any pod.
+{{- if .Values.migration.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "distributed-job-queue.fullname" . }}-migrate
+  labels:
+    {{- include "distributed-job-queue.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    # Runs before the migration Job's own labels/rbac would otherwise be
+    # considered part of the release, and before the api Deployment (default
+    # weight 0) is touched.
+    helm.sh/hook-weight: "-5"
+    # before-hook-creation clears out a Job left over from a previous
+    # release attempt so the name does not collide; hook-succeeded removes
+    # this one once it has done its job, so `kubectl get jobs` in platform
+    # does not accumulate one entry per deploy forever.
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.migration.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.migration.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "distributed-job-queue.apiSelectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: migration
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: migrate
+          image: "{{ .Values.image.registry }}/{{ .Values.image.api.repository }}:{{ .Values.image.api.tag | default $.Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # Overrides the image's CMD, which is
+          # `alembic upgrade head && uvicorn ...`. Only the first half runs
+          # here; the api Deployment's containers skip straight to uvicorn.
+          command: ["alembic", "upgrade", "head"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          envFrom:
+            - configMapRef:
+                name: {{ include "distributed-job-queue.fullname" . }}-config
+            - secretRef:
+                name: {{ .Values.existingSecret | default (printf "%s-secret" (include "distributed-job-queue.fullname" .)) }}
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+      {{- if .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml .Values.imagePullSecrets | nindent 8 }}
+      {{- end }}
+{{- end }}
