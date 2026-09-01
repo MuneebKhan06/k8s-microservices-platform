@@ -1,0 +1,67 @@
+# Three Services for two Deployments.
+#
+# The api gets a routable ClusterIP plus a headless one for scraping. The
+# worker gets only a headless one, because nothing ever calls a worker: it
+# pulls from Redis rather than being pushed to, so it has no need for a
+# load balanced address and would be wrong to have one.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "distributed-job-queue.fullname" . }}-api
+  labels:
+    {{- include "distributed-job-queue.apiSelectorLabels" . | nindent 4 }}
+spec:
+  type: {{ .Values.api.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.api.service.port }}
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "distributed-job-queue.apiSelectorLabels" . | nindent 4 }}
+---
+# Headless, for Prometheus. This project serves /metrics from the same
+# uvicorn process and port as the rest of the API, so scraping through the
+# ClusterIP above would work but would land on an arbitrary replica each
+# time, making any per instance rate meaningless. Headless resolves to every
+# pod address, giving the ServiceMonitor one target per replica.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "distributed-job-queue.fullname" . }}-api-metrics
+  labels:
+    {{- include "distributed-job-queue.apiSelectorLabels" . | nindent 4 }}
+    monitoring: scrape
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - name: metrics
+      port: {{ .Values.api.service.targetPort }}
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "distributed-job-queue.apiSelectorLabels" . | nindent 4 }}
+---
+# Worker metrics. Each worker binds its own prometheus_client listener on
+# this port and exports gauges labelled by worker_id, so per pod targets are
+# not a nicety here: two workers scraped through a shared load balanced
+# address would alternate and their in flight gauges would look like one
+# worker flapping.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "distributed-job-queue.fullname" . }}-worker-metrics
+  labels:
+    {{- include "distributed-job-queue.workerSelectorLabels" . | nindent 4 }}
+    monitoring: scrape
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - name: metrics
+      port: {{ .Values.worker.metricsPort }}
+      targetPort: metrics
+      protocol: TCP
+  selector:
+    {{- include "distributed-job-queue.workerSelectorLabels" . | nindent 4 }}
