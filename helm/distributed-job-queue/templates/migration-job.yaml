@@ -1,8 +1,8 @@
 # Runs `alembic upgrade head` exactly once before the api Deployment is
 # created or updated. See values.yaml for why this exists: the image's own
 # CMD runs migrations inline in every container, and two api pods starting
-# together — a fresh install with replicaCount 2, or a rolling update with
-# maxSurge above zero — would otherwise run alembic concurrently with no
+# together, whether a fresh install with replicaCount 2 or a rolling update
+# with maxSurge above zero, would otherwise run alembic concurrently with no
 # lock between them.
 #
 # pre-install and pre-upgrade both point at this hook, and Helm blocks the

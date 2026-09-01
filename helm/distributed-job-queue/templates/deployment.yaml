@@ -71,9 +71,9 @@ spec:
           {{- if .Values.api.probes.readiness.enabled }}
           # See the note in values.yaml: /health always returns 200, so this
           # only proves uvicorn is answering, not that Redis or Postgres are
-          # reachable. Kept anyway because it is still real signal — a hung
-          # or not-yet-started process is correctly kept out of the Service —
-          # it is just not the whole signal readiness is supposed to be.
+          # reachable. Kept anyway because it is still real signal: a hung
+          # or not-yet-started process is correctly kept out of the Service.
+          # It is just not the whole signal readiness is supposed to be.
           readinessProbe:
             httpGet:
               path: {{ .Values.api.probes.readiness.path }}

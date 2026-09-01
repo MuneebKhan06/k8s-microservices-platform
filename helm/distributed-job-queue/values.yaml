@@ -36,7 +36,7 @@ api:
     targetPort: 8000
 
   # /health on this service always returns HTTP 200, even when Redis or
-  # Postgres is unreachable — degraded state is reported in the JSON body,
+  # Postgres is unreachable. Degraded state is reported in the JSON body,
   # not the status code. That is the right call for liveness (a dependency
   # outage should not get the process killed) and the wrong endpoint for
   # readiness, because kubelet reads the status code only and never sees the
@@ -105,7 +105,8 @@ worker:
 
   # The worker has no HTTP server. Its only listening port is the Prometheus
   # metrics port, and that port is opened after ensure_consumer_groups()
-  # succeeds — after Redis is reachable, not before. A TCP check on it is
+  # succeeds, which is to say after Redis is reachable, not before. A TCP
+  # check on it is
   # therefore not a weak substitute for a real health check here, it is an
   # accurate one: if the port accepts, Redis was reachable at startup.
   # It cannot detect Redis becoming unreachable later, which the worker's
@@ -154,9 +155,9 @@ worker:
 # Runs `alembic upgrade head` once as a Helm hook Job before any api pod is
 # created or updated, instead of running it inside the api container's start
 # command. With replicaCount 2+, letting each pod run its own migration on
-# start means two pods racing to apply the same migration concurrently —
-# alembic takes no lock — on every fresh install and on any rolling update
-# with maxSurge above zero. A single hook Job that must succeed before the
+# start means two pods racing to apply the same migration concurrently, and
+# alembic takes no lock. That happens on every fresh install and on any
+# rolling update with maxSurge above zero. A single hook Job that must succeed before the
 # Deployment is touched removes the race entirely.
 migration:
   enabled: true
