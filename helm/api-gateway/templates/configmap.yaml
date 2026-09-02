@@ -1,0 +1,71 @@
+# Non secret application config. DATABASE_URL and the Redis URL (if it ever
+# gains credentials) live in the Secret because a connection string with a
+# password in it is a credential, not configuration.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "api-gateway.fullname" . }}-config
+  labels:
+    {{- include "api-gateway.labels" . | nindent 4 }}
+data:
+  ENVIRONMENT: {{ .Values.config.environment | quote }}
+  DEBUG: {{ .Values.config.debug | quote }}
+  HOST: "0.0.0.0"
+  PORT: {{ .Values.service.targetPort | quote }}
+  LOG_LEVEL: {{ .Values.config.logLevel | quote }}
+  ROUTES_FILE: "/app/config/routes.yaml"
+
+  REDIS_URL: {{ .Values.config.redis.url | quote }}
+  REDIS_MAX_CONNECTIONS: {{ .Values.config.redis.maxConnections | quote }}
+
+  JWT_ALGORITHM: {{ .Values.config.jwt.algorithm | quote }}
+  ACCESS_TOKEN_TTL_SECONDS: {{ .Values.config.jwt.accessTokenTtlSeconds | quote }}
+  REFRESH_TOKEN_TTL_SECONDS: {{ .Values.config.jwt.refreshTokenTtlSeconds | quote }}
+  BLACKLIST_CACHE_TTL_SECONDS: {{ .Values.config.jwt.blacklistCacheTtlSeconds | quote }}
+
+  DEFAULT_RATE_LIMIT_ALGORITHM: {{ .Values.config.rateLimit.defaultAlgorithm | quote }}
+  DEFAULT_RATE_LIMIT_REQUESTS: {{ .Values.config.rateLimit.defaultRequests | quote }}
+  DEFAULT_RATE_LIMIT_WINDOW_SECONDS: {{ .Values.config.rateLimit.defaultWindowSeconds | quote }}
+
+  BREAKER_FAILURE_THRESHOLD: {{ .Values.config.breaker.failureThreshold | quote }}
+  BREAKER_FAILURE_WINDOW_SECONDS: {{ .Values.config.breaker.failureWindowSeconds | quote }}
+  BREAKER_RECOVERY_TIMEOUT_SECONDS: {{ .Values.config.breaker.recoveryTimeoutSeconds | quote }}
+  BREAKER_SUCCESS_THRESHOLD: {{ .Values.config.breaker.successThreshold | quote }}
+
+  UPSTREAM_TIMEOUT_SECONDS: {{ .Values.config.upstream.timeoutSeconds | quote }}
+  UPSTREAM_MAX_CONNECTIONS: {{ .Values.config.upstream.maxConnections | quote }}
+
+  POSTGRES_HOST: {{ .Values.config.postgres.host | quote }}
+  POSTGRES_PORT: {{ .Values.config.postgres.port | quote }}
+  POSTGRES_DB: {{ .Values.config.postgres.database | quote }}
+  POSTGRES_USER: {{ .Values.config.postgres.user | quote }}
+---
+# The route table, mounted into the container rather than baked into the
+# image. Field names below are what gateway/schemas/gateway.py deserializes:
+# snake_case, not the camelCase used in values.yaml, because this is the
+# application's config format, not a Helm convention.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "api-gateway.fullname" . }}-routes
+  labels:
+    {{- include "api-gateway.labels" . | nindent 4 }}
+data:
+  routes.yaml: |
+    routes:
+    {{- range .Values.config.routes }}
+      - path_prefix: {{ .pathPrefix }}
+        upstream: {{ .upstream | default "null" }}
+        strip_prefix: {{ .stripPrefix }}
+        {{- if .timeoutSeconds }}
+        timeout_seconds: {{ .timeoutSeconds }}
+        {{- end }}
+        auth_required: {{ .authRequired }}
+        circuit_breaker: {{ .circuitBreaker }}
+        {{- if .rateLimit }}
+        rate_limit:
+          algorithm: {{ .rateLimit.algorithm }}
+          requests: {{ .rateLimit.requests }}
+          window_seconds: {{ .rateLimit.windowSeconds }}
+        {{- end }}
+    {{- end }}
