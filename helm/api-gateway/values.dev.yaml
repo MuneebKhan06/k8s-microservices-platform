@@ -1,0 +1,56 @@
+# Dev overrides. Only the keys that differ from values.yaml belong here.
+#
+#   helm upgrade --install api-gateway ./helm/api-gateway \
+#     -n platform -f helm/api-gateway/values.dev.yaml
+
+image:
+  pullPolicy: Always
+  tag: "dev"
+
+replicaCount: 1
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 96Mi
+  limits:
+    cpu: 250m
+    memory: 192Mi
+
+probes:
+  startup:
+    failureThreshold: 6
+  liveness:
+    initialDelaySeconds: 10
+
+autoscaling:
+  enabled: false
+
+migration:
+  enabled: true
+
+config:
+  # development, not production. This is what turns off the startup
+  # validator in gateway/config.py that refuses to boot with an example
+  # JWT secret or a default database password. Both are used below on
+  # purpose: this is a throwaway dev database, and a check meant to catch a
+  # real deployment shipping with the repo's own example secret has no job
+  # to do here.
+  environment: development
+  debug: true
+  logLevel: DEBUG
+
+secrets:
+  # Safe to hardcode because config.environment above is development, which
+  # skips the production safety check entirely. Trying to use this value
+  # with environment=production would correctly fail to boot.
+  jwtSecretKey: "dev-only-jwt-secret-not-for-production-use-0000"
+  postgresPassword: "devpassword"
+
+podAntiAffinity:
+  enabled: false
+
+ingress:
+  host: platform.local
+  tls:
+    enabled: false
