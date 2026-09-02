@@ -1,0 +1,226 @@
+# Defaults for api-gateway. Production shaped; values.dev.yaml trims it for
+# a single node dev install.
+
+image:
+  registry: "REGISTRY_HOST:5000"
+  repository: api-gateway
+  tag: ""            # empty falls back to Chart.appVersion
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# 2 min, 10 max, matching the README's component table. Highest floor and
+# ceiling of the three application services, because every request to any
+# backend passes through this one first: it is a single point of failure by
+# construction, so it gets the most headroom.
+replicaCount: 2
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8000
+
+# /health here has the same shape as distributed-job-queue's: it always
+# returns HTTP 200, with "healthy", "degraded" or "unhealthy" reported only
+# in the JSON body (gateway/health.py: overall_status). "unhealthy" means
+# Redis or Postgres is gone, which means auth and rate limiting cannot be
+# enforced, which is the gateway's actual job, and that state is invisible to a
+# probe that only reads the status code. Same limitation noted in the
+# distributed-job-queue chart, same fix needed: a dedicated /health/ready
+# that returns non-200 when dependencies are down. Third project in this
+# platform with the identical gap.
+probes:
+  startup:
+    enabled: true
+    path: /health
+    periodSeconds: 10
+    failureThreshold: 18
+  readiness:
+    enabled: true
+    path: /health
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+  liveness:
+    enabled: true
+    path: /health
+    initialDelaySeconds: 15
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+# HTTP request rate. This is the one HPA in the platform the README's table
+# and this chart agree on: the gateway's load is directly the request rate
+# it receives, unlike distributed-job-queue's api, which was moved onto this
+# same signal for the same reason after deviating from its own table row.
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  externalMetric:
+    name: http_requests_per_second
+    target: api-gateway
+    targetAverageValue: "100"
+
+# Runs `alembic upgrade head` once as a Helm hook Job before the Deployment
+# is created or updated. Unlike distributed-job-queue, this image's own CMD
+# already does not run migrations inline. Dockerfile.gateway says so
+# explicitly, citing the same rolling-update race. The hook Job is still
+# needed because something has to apply the schema at all; the image just
+# does not make the mistake of doing it once per pod.
+migration:
+  enabled: true
+  backoffLimit: 2
+  activeDeadlineSeconds: 300
+
+config:
+  # Startup fails closed in production: gateway/config.py refuses to boot
+  # with ENVIRONMENT=production if JWT_SECRET_KEY is the example value or
+  # under 32 characters, DEBUG is true, or DATABASE_URL still has the
+  # example password. That is the point, not a bug to route around. It
+  # means a misconfigured production values file fails at rollout instead
+  # of silently accepting forgeable tokens.
+  environment: production
+  debug: false
+  logLevel: INFO
+
+  jwt:
+    algorithm: HS256
+    accessTokenTtlSeconds: "900"
+    refreshTokenTtlSeconds: "604800"
+    blacklistCacheTtlSeconds: "5.0"
+
+  rateLimit:
+    defaultAlgorithm: token_bucket
+    defaultRequests: "100"
+    defaultWindowSeconds: "60"
+
+  breaker:
+    failureThreshold: "5"
+    failureWindowSeconds: "60"
+    recoveryTimeoutSeconds: "30"
+    successThreshold: "2"
+
+  upstream:
+    timeoutSeconds: "30"
+    maxConnections: "100"
+
+  redis:
+    # No credentials by default, matching the .env.example shipped with the
+    # project. If the platform's Redis is ever put behind auth, this moves
+    # to the Secret alongside DATABASE_URL, the same way it would for any
+    # connection string carrying a password.
+    url: "redis://redis.infra.svc.cluster.local:6379/0"
+    maxConnections: "50"
+
+  postgres:
+    host: postgresql.infra.svc.cluster.local
+    port: "5432"
+    database: gateway
+    user: gateway
+
+  # Routed at the platform's real backends rather than the demo
+  # service-a/b/c upstreams routes.yaml ships with in the source repo. Paths
+  # are the gateway's own clean prefixes (/api/events, /api/jobs); the
+  # ingress strips the external /api/gateway prefix before traffic reaches
+  # this pod, so what the gateway sees matches what routes.yaml expects.
+  # /auth, /health and /metrics are handled by the gateway itself and have
+  # no upstream.
+  routes:
+    - pathPrefix: /api/events
+      upstream: http://event-ingestion-api.platform.svc.cluster.local
+      stripPrefix: true
+      timeoutSeconds: 30
+      authRequired: true
+      circuitBreaker: true
+      rateLimit:
+        algorithm: sliding_window
+        requests: 200
+        windowSeconds: 60
+    - pathPrefix: /api/jobs
+      upstream: http://distributed-job-queue-api.platform.svc.cluster.local
+      stripPrefix: true
+      timeoutSeconds: 30
+      authRequired: true
+      circuitBreaker: true
+      rateLimit:
+        algorithm: token_bucket
+        requests: 100
+        windowSeconds: 60
+    - pathPrefix: /auth
+      upstream: null
+      stripPrefix: false
+      authRequired: false
+      circuitBreaker: false
+      rateLimit:
+        algorithm: fixed_window
+        requests: 20
+        windowSeconds: 60
+    - pathPrefix: /health
+      upstream: null
+      stripPrefix: false
+      authRequired: false
+      circuitBreaker: false
+    - pathPrefix: /metrics
+      upstream: null
+      stripPrefix: false
+      authRequired: false
+      circuitBreaker: false
+
+# Name of a Secret that already exists in the namespace. Set this and the
+# chart stops rendering its own Secret, the same External Secrets Operator
+# escape hatch used in the other two charts.
+existingSecret: ""
+
+secrets:
+  # No safe default on purpose. Leaving this unset and installing with
+  # config.environment=production makes the pod fail at startup with the
+  # exact message explaining why, rather than boot with a key anyone who
+  # cloned the repository already knows. Generate with: openssl rand -hex 32
+  jwtSecretKey: ""
+  postgresPassword: "CHANGEME"
+
+strategy:
+  maxUnavailable: 0
+  maxSurge: 1
+
+podAntiAffinity:
+  enabled: true
+
+terminationGracePeriodSeconds: 30
+
+# Exposes the gateway at /api/gateway on the shared ingress from
+# manifests/ingress-nginx.yaml. The rewrite-target annotation strips that
+# prefix before forwarding, so a request to /api/gateway/api/events reaches
+# this pod as /api/events, matching the routes table above exactly rather
+# than needing every path_prefix to repeat /api/gateway.
+ingress:
+  enabled: true
+  className: nginx
+  host: platform.local
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+  path: /api/gateway(/|$)(.*)
+  pathType: ImplementationSpecific
+  tls:
+    enabled: false
+
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []

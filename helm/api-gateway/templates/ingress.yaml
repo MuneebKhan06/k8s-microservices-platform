@@ -1,0 +1,40 @@
+# Exposes this chart at /api/gateway on the platform's shared ingress
+# (manifests/ingress-nginx.yaml installs the controller; this is one
+# Ingress resource routing into it).
+#
+# The rewrite-target annotation strips the /api/gateway prefix before nginx
+# forwards the request, so a client request to /api/gateway/api/events
+# reaches this pod as /api/events. That match matters: it is the exact
+# path_prefix the route table in values.yaml (config.routes) is written
+# against. Without the rewrite, either every path_prefix in that table would
+# need to repeat /api/gateway, or the gateway's own routing would simply
+# never match anything ingress forwards to it.
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "api-gateway.fullname" . }}
+  labels:
+    {{- include "api-gateway.labels" . | nindent 4 }}
+  annotations:
+    {{- toYaml .Values.ingress.annotations | nindent 4 }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ .Values.ingress.host }}
+      secretName: {{ include "api-gateway.fullname" . }}-tls
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.host }}
+      http:
+        paths:
+          - path: {{ .Values.ingress.path }}
+            pathType: {{ .Values.ingress.pathType }}
+            backend:
+              service:
+                name: {{ include "api-gateway.fullname" . }}
+                port:
+                  name: http
+{{- end }}

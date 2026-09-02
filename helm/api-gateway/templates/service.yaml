@@ -1,0 +1,41 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "api-gateway.fullname" . }}
+  labels:
+    {{- include "api-gateway.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "api-gateway.selectorLabels" . | nindent 4 }}
+---
+# Headless, for Prometheus. /metrics is served from the same port as
+# everything else, so scraping through the ClusterIP above would land on
+# one arbitrary replica per scrape. Headless resolves to every pod address,
+# which matters more here than in the other two charts: the RED metrics
+# this service reports (request rate, errors, duration per route) are what
+# the platform's dashboards are built on, and averaging them across
+# replicas that happen to answer a shared VIP would hide exactly the
+# per-instance latency spike a dashboard exists to catch.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "api-gateway.fullname" . }}-metrics
+  labels:
+    {{- include "api-gateway.labels" . | nindent 4 }}
+    monitoring: scrape
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - name: metrics
+      port: {{ .Values.service.targetPort }}
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "api-gateway.selectorLabels" . | nindent 4 }}

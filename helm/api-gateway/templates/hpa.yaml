@@ -1,0 +1,47 @@
+# HTTP request rate. Unlike the other two application charts, this one
+# needed no deviation from the README's component table: the gateway's load
+# genuinely is the request rate it receives, since every request to any
+# backend in the platform passes through it first.
+{{- if .Values.autoscaling.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "api-gateway.fullname" . }}
+  labels:
+    {{- include "api-gateway.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "api-gateway.fullname" . }}
+  minReplicas: {{ .Values.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.autoscaling.maxReplicas }}
+  metrics:
+    - type: External
+      external:
+        metric:
+          name: {{ .Values.autoscaling.externalMetric.name }}
+          selector:
+            matchLabels:
+              service: {{ .Values.autoscaling.externalMetric.target | quote }}
+        target:
+          type: AverageValue
+          averageValue: {{ .Values.autoscaling.externalMetric.targetAverageValue | quote }}
+  behavior:
+    scaleUp:
+      # Fastest scale up in the platform: 30s stabilization, doubling every
+      # 30s. This pod sits in front of every other pod, so being slow to add
+      # capacity here throttles all three backend services at once, not just
+      # itself.
+      stabilizationWindowSeconds: 30
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 30
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 50
+          periodSeconds: 60
+{{- end }}

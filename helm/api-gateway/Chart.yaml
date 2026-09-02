@@ -1,0 +1,17 @@
+apiVersion: v2
+name: api-gateway
+description: Reverse proxy from Project 3 in front of event-ingestion-api and distributed-job-queue
+type: application
+
+version: 0.1.0
+appVersion: "0.1.0"
+
+keywords:
+  - reverse-proxy
+  - jwt
+  - rate-limiting
+  - circuit-breaker
+
+maintainers:
+  - name: Muneeb Sami Khan
+    email: muneebsamikhan@gmail.com
