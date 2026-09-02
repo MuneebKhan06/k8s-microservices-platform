@@ -2,7 +2,7 @@
 # updated. Simpler than the equivalent job in the distributed-job-queue
 # chart: that chart also had to override the Deployment's command, because
 # the image's own CMD ran migrations inline. This image's CMD is already
-# just uvicorn — Dockerfile.gateway comments explain the same rolling
+# just uvicorn. Dockerfile.gateway comments explain the same rolling
 # update race and choose not to run migrations in the container at all. The
 # hook Job is still needed because something has to apply the schema
 # before pods start expecting it to exist.

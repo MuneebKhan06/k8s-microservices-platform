@@ -39,7 +39,7 @@ service:
 # returns HTTP 200, with "healthy", "degraded" or "unhealthy" reported only
 # in the JSON body (gateway/health.py: overall_status). "unhealthy" means
 # Redis or Postgres is gone, which means auth and rate limiting cannot be
-# enforced — the gateway's actual job — and that state is invisible to a
+# enforced, which is the gateway's actual job, and that state is invisible to a
 # probe that only reads the status code. Same limitation noted in the
 # distributed-job-queue chart, same fix needed: a dedicated /health/ready
 # that returns non-200 when dependencies are down. Third project in this
@@ -80,7 +80,7 @@ autoscaling:
 
 # Runs `alembic upgrade head` once as a Helm hook Job before the Deployment
 # is created or updated. Unlike distributed-job-queue, this image's own CMD
-# already does not run migrations inline — Dockerfile.gateway says so
+# already does not run migrations inline. Dockerfile.gateway says so
 # explicitly, citing the same rolling-update race. The hook Job is still
 # needed because something has to apply the schema at all; the image just
 # does not make the mistake of doing it once per pod.
