@@ -9,7 +9,7 @@
 # alone read its tables. See templates/configmap.yaml for exactly how.
 #
 # Day 5 scope: single replica, no pgpool, no streaming replication. That is
-# a deliberate, documented gap, not an oversight — see the replicaCount
+# a deliberate, documented gap, not an oversight. See the replicaCount
 # comment below.
 
 image:

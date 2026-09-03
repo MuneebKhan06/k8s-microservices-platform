@@ -14,6 +14,18 @@ metadata:
     {{- include "postgresql.labels" . | nindent 4 }}
 data:
   postgresql.conf: |
+    # The StatefulSet passes this file to postgres via -c config_file=,
+    # which replaces the file the entrypoint script would otherwise
+    # generate and patch. That means the entrypoint's own default patch of
+    # listen_addresses to '*' never happens: compiled-in Postgres default
+    # is 'localhost' only, which would make this instance unreachable from
+    # any other pod despite the Service and NetworkPolicy being correct.
+    # Set explicitly here for exactly that reason. Everything else in
+    # Postgres not mentioned in this file still falls back to its normal
+    # compiled-in default; overriding config_file does not require
+    # restating settings this chart has no opinion on.
+    listen_addresses = '*'
+
     # Tuned against the resources.requests in values.yaml (500m CPU, 512Mi
     # memory), not the limits. Sizing against the limit would mean these
     # settings assume memory that is only available during a burst, and
@@ -47,7 +59,7 @@ data:
   01-create-app-databases.sh: |
     #!/bin/sh
     # Runs once, automatically, the first time this StatefulSet starts
-    # against an empty data directory — that is how the official postgres
+    # against an empty data directory. That is how the official postgres
     # image's /docker-entrypoint-initdb.d convention works, and exactly the
     # same caveat event-ingestion-api's own docker-compose.yml already notes
     # about its local Postgres: these scripts create a schema, they do not

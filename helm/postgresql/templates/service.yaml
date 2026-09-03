@@ -1,0 +1,47 @@
+# The stable address applications actually connect to. All three chart's
+# postgres host values (postgresql.infra.svc.cluster.local) resolve through
+# this Service, which only works if this chart is installed with release
+# name "postgresql", since the fullname helper collapses to exactly the release
+# name when the release name already contains the chart name:
+#   helm upgrade --install postgresql ./helm/postgresql -n infra
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "postgresql.fullname" . }}
+  labels:
+    {{- include "postgresql.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: postgresql
+      port: 5432
+      targetPort: postgresql
+      protocol: TCP
+  selector:
+    {{- include "postgresql.selectorLabels" . | nindent 4 }}
+---
+# Required by the StatefulSet's serviceName field, not by applications.
+# This is what gives each pod a stable, individually addressable DNS name
+# (postgresql-0.postgresql-headless.infra.svc.cluster.local), which matters
+# once replicaCount is more than 1 and replicas need to reach the primary
+# by name specifically rather than through the load-balanced Service above.
+# At replicaCount 1 nothing actually depends on that yet, but the
+# StatefulSet API requires serviceName to name a real, existing headless
+# Service regardless of replica count.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "postgresql.fullname" . }}-headless
+  labels:
+    {{- include "postgresql.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - name: postgresql
+      port: 5432
+      targetPort: postgresql
+      protocol: TCP
+  selector:
+    {{- include "postgresql.selectorLabels" . | nindent 4 }}
