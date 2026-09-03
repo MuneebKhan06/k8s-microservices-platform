@@ -1,0 +1,71 @@
+# Two files, one ConfigMap: postgresql.conf tuning, and the init script that
+# creates one role and one database per platform service.
+#
+# Nothing in either file is a secret. The init script references each
+# database's password as a shell variable ($EVENTS_DB_PASSWORD and so on)
+# rather than containing the literal value, so the password itself lives
+# only in the Secret and reaches this script through the container's
+# environment at run time, not through this ConfigMap.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "postgresql.fullname" . }}-config
+  labels:
+    {{- include "postgresql.labels" . | nindent 4 }}
+data:
+  postgresql.conf: |
+    # Tuned against the resources.requests in values.yaml (500m CPU, 512Mi
+    # memory), not the limits. Sizing against the limit would mean these
+    # settings assume memory that is only available during a burst, and
+    # shared_buffers in particular is allocated once at startup and held for
+    # the life of the process regardless of load.
+
+    # ~25% of the memory request. The commonly cited starting point for
+    # shared_buffers, because Postgres also relies on the OS page cache for
+    # the rest; giving it more starves that cache without a matching gain.
+    shared_buffers = {{ .Values.tuning.sharedBuffers }}
+
+    # ~75% of the memory request. Used only by the query planner to guess
+    # whether data is likely to be cached; setting it does not reserve
+    # memory the way shared_buffers does.
+    effective_cache_size = {{ .Values.tuning.effectiveCacheSize }}
+
+    maintenance_work_mem = {{ .Values.tuning.maintenanceWorkMem }}
+    wal_buffers = {{ .Values.tuning.walBuffers }}
+
+    # Three application services on one instance, each with a small
+    # connection pool of its own, plus headroom for psql and the health
+    # probes below. Not sized for pgbouncer in front, because there isn't
+    # one yet.
+    max_connections = {{ .Values.tuning.maxConnections }}
+
+    # Logs slow queries without logging every query, which on a shared
+    # instance would make the log volume roughly proportional to combined
+    # traffic from all three services.
+    log_min_duration_statement = 250ms
+    log_line_prefix = '%m [%p] %q%u@%d '
+  01-create-app-databases.sh: |
+    #!/bin/sh
+    # Runs once, automatically, the first time this StatefulSet starts
+    # against an empty data directory — that is how the official postgres
+    # image's /docker-entrypoint-initdb.d convention works, and exactly the
+    # same caveat event-ingestion-api's own docker-compose.yml already notes
+    # about its local Postgres: these scripts create a schema, they do not
+    # change one on a volume that already has data. A password rotation
+    # here after first install needs ALTER ROLE run by hand, not a re-run
+    # of this script.
+    set -e
+    {{- range .Values.databases }}
+
+    # {{ .name }}, owned by {{ .user }}.
+    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" <<-EOSQL
+      CREATE ROLE {{ .user }} WITH LOGIN PASSWORD '${{ .envPrefix }}_PASSWORD';
+      CREATE DATABASE {{ .name }} OWNER {{ .user }};
+      -- PUBLIC can connect to any database by default in Postgres. Revoking
+      -- that and granting CONNECT back only to the owning role is what
+      -- keeps three services on one instance from being able to reach each
+      -- other's data with their own, valid credentials.
+      REVOKE ALL ON DATABASE {{ .name }} FROM PUBLIC;
+      GRANT CONNECT ON DATABASE {{ .name }} TO {{ .user }};
+    EOSQL
+    {{- end }}
