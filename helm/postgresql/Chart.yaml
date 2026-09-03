@@ -1,0 +1,16 @@
+apiVersion: v2
+name: postgresql
+description: Shared PostgreSQL StatefulSet hosting one database per platform service
+type: application
+
+version: 0.1.0
+appVersion: "16"
+
+keywords:
+  - postgresql
+  - statefulset
+  - database
+
+maintainers:
+  - name: Muneeb Sami Khan
+    email: muneebsamikhan@gmail.com
