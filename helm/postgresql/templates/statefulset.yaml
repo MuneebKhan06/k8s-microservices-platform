@@ -1,0 +1,142 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "postgresql.fullname" . }}
+  labels:
+    {{- include "postgresql.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "postgresql.fullname" . }}-headless
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "postgresql.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- if not .Values.existingSecret }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "postgresql.selectorLabels" . | nindent 8 }}
+    spec:
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      # No explicit runAsUser: the image already switches to its own
+      # non-root "postgres" user via its own Dockerfile USER directive.
+      #
+      # fsGroup is a real guess, stated as one rather than left silent. The
+      # postgres:16-alpine image is expected to run as uid/gid 999. Docker-
+      # library standardized the alpine variant onto the same 999 the
+      # debian variant has always used, specifically because the two
+      # disagreeing broke exactly this kind of Kubernetes fsGroup setup.
+      # Not verified against a running pod on this cluster yet: if the PVC
+      # mount comes up without write permission, this is the first value to
+      # check with `kubectl exec ... -- id`.
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 999
+      containers:
+        - name: postgresql
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          ports:
+            - name: postgresql
+              containerPort: 5432
+              protocol: TCP
+          env:
+            - name: POSTGRES_USER
+              value: {{ .Values.superuser.username | quote }}
+            # A subdirectory of the mount, not the mount point itself. Some
+            # volume types (notably hostPath-backed ones, which is what
+            # local-path-provisioner uses) place a lost+found directory at
+            # the root of a fresh volume, and initdb refuses to initialize
+            # a data directory that is not empty. Nesting PGDATA one level
+            # down avoids that failure on first boot.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          envFrom:
+            - secretRef:
+                name: {{ .Values.existingSecret | default (printf "%s-secret" (include "postgresql.fullname" .)) }}
+          # Overrides the image's default CMD, which is just `postgres`.
+          # config_file points at the tuned file mounted below; see that
+          # file's own listen_addresses comment for the one setting this
+          # override makes it this chart's job to restate.
+          args:
+            - "-c"
+            - "config_file=/etc/postgresql/postgresql.conf"
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: config
+              mountPath: /etc/postgresql/postgresql.conf
+              subPath: postgresql.conf
+              readOnly: true
+            # The whole ConfigMap, not just the init script, because
+            # /docker-entrypoint-initdb.d only executes files ending in
+            # .sh, .sql or .sql.gz, so postgresql.conf sitting alongside is
+            # silently ignored by that mechanism rather than colliding
+            # with it.
+            - name: config
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+          # Generous on purpose. First boot runs initdb, then this chart's
+          # own script creates three roles and three databases before the
+          # server is accepting real connections, slower than a plain
+          # single-database first start.
+          startupProbe:
+            exec:
+              command: ["pg_isready", "-U", {{ .Values.superuser.username | quote }}]
+            periodSeconds: 10
+            failureThreshold: 30
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", {{ .Values.superuser.username | quote }}]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          # pg_isready checks the local server only, no external
+          # dependency, which is exactly what makes it safe to also use for
+          # liveness: unlike the application charts' /health endpoints, this
+          # probe cannot fail because some other service is unreachable and
+          # trigger a restart that fixes nothing.
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", {{ .Values.superuser.username | quote }}]
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "postgresql.fullname" . }}-config
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "postgresql.selectorLabels" . | nindent 10 }}
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.storage.className }}
+        storageClassName: {{ .Values.storage.className }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.storage.size }}

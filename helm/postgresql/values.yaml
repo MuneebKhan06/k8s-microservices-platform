@@ -1,0 +1,118 @@
+# Single instance, hosting one database per platform service rather than one
+# StatefulSet per service. The README lists PostgreSQL once under infra, and
+# three separate instances would triple the storage and resource footprint
+# on a two or three node lab cluster for isolation this size of platform
+# does not need. Isolation between the three databases is enforced at the
+# role level instead: each app gets its own login role, owns only its own
+# database, and PUBLIC's default CONNECT privilege is revoked so one app's
+# credentials cannot even open a connection to another app's database, let
+# alone read its tables. See templates/configmap.yaml for exactly how.
+#
+# Day 5 scope: single replica, no pgpool, no streaming replication. That is
+# a deliberate, documented gap, not an oversight. See the replicaCount
+# comment below.
+
+image:
+  # Matches the postgres:16-alpine tag every one of the three app repos
+  # already pins in docker-compose.yml. Using anything else here would mean
+  # the schema created by each app's alembic migrations was never actually
+  # tested against the Postgres version running in the cluster.
+  repository: postgres
+  tag: "16-alpine"
+  pullPolicy: IfNotPresent
+
+nameOverride: ""
+fullnameOverride: ""
+
+# The README's target is 3 replicas with pgpool for HA. Shipping that
+# requires streaming replication configured between primary and replicas,
+# and pgpool in front to route writes to the primary and reads anywhere.
+# Neither exists yet. Installing this chart as it stands with replicaCount
+# above 1 would produce N independent, unreplicated Postgres instances each
+# thinking it is the only one, which is worse than one instance: silent data
+# divergence instead of an honest single point of failure. Stays at 1 until
+# replication and pgpool are built.
+replicaCount: 1
+
+# Sized per the README's Decision 4 methodology and its resulting table:
+# 500m/2000m CPU, 512Mi/1Gi memory. Of every component in the platform, this
+# is the one where the request-to-limit gap matters most: Postgres is
+# usually idle between bursts of query load, but a burst that hits the
+# limit gets OOM killed mid-transaction, which is a worse failure than the
+# same event in a stateless api pod that Kubernetes just restarts.
+resources:
+  requests:
+    cpu: 500m
+    memory: 512Mi
+  limits:
+    cpu: 2000m
+    memory: 1Gi
+
+storage:
+  size: 5Gi
+  # Empty uses whatever StorageClass is marked default in the cluster,
+  # which the build plan sets to local-path-provisioner on Day 5. Left
+  # overridable because local-path binds a volume to the node it was
+  # provisioned on: if that node is lost, this StatefulSet's data goes with
+  # it. A real StorageClass (EBS, Persistent Disk, Longhorn) replaces this
+  # value without touching the template.
+  className: ""
+
+# postgresql.conf tuning, sized against the resource requests above rather
+# than guessed. See templates/configmap.yaml for the reasoning behind each
+# value.
+tuning:
+  maxConnections: 100
+  sharedBuffers: 128MB
+  effectiveCacheSize: 384MB
+  maintenanceWorkMem: 64MB
+  walBuffers: 8MB
+
+# Superuser role the postgres image creates on first init. Only used for
+# administration and by the init script that creates the three app roles
+# below; no application connects as this user.
+superuser:
+  username: postgres
+
+# One entry per platform service. name/user/secretKey are read by both the
+# ConfigMap (to generate the CREATE ROLE / CREATE DATABASE script) and the
+# Secret (to know which key holds that database's password), so adding a
+# fourth service later is one list entry, not a template change.
+databases:
+  - name: events_db
+    user: events_user
+    secretKey: eventsDbPassword
+    envPrefix: EVENTS_DB
+  - name: jobqueue
+    user: jobqueue
+    secretKey: jobqueuePassword
+    envPrefix: JOBQUEUE_DB
+  - name: gateway
+    user: gateway
+    secretKey: gatewayPassword
+    envPrefix: GATEWAY_DB
+
+# Name of a Secret that already exists in the namespace. Set this and the
+# chart stops rendering its own Secret, the same External Secrets Operator
+# escape hatch used in the three application charts.
+existingSecret: ""
+
+secrets:
+  # No safe default for the superuser password on purpose, same reasoning
+  # as api-gateway's jwtSecretKey: a placeholder here would boot a database
+  # anyone who cloned this repository already has full access to.
+  superuserPassword: ""
+  eventsDbPassword: "CHANGEME"
+  jobqueuePassword: "CHANGEME"
+  gatewayPassword: "CHANGEME"
+
+# 60s, longer than any application chart's grace period. Postgres runs a
+# checkpoint on SIGTERM (smart shutdown) before exiting; cutting that off
+# early on a busy database means the next start does crash recovery from
+# WAL instead of a clean shutdown, which is slower and is exactly the kind
+# of thing worth never triggering by an impatient grace period.
+terminationGracePeriodSeconds: 60
+
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
