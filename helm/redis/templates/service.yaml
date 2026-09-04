@@ -1,0 +1,43 @@
+# The address both applications connect to. distributed-job-queue and
+# api-gateway resolve redis.infra.svc.cluster.local, which requires this
+# chart to be installed with release name "redis":
+#   helm upgrade --install redis ./helm/redis -n infra
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "redis.fullname" . }}
+  labels:
+    {{- include "redis.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: redis
+      protocol: TCP
+  selector:
+    {{- include "redis.selectorLabels" . | nindent 4 }}
+---
+# Required by the StatefulSet's serviceName. At replicaCount 1 nothing
+# reads the per pod DNS names it provides, but they are what replicaof and
+# Sentinel will need once replication is built: a replica has to be told
+# to follow redis-0.redis-headless.infra.svc.cluster.local specifically,
+# not the load balanced Service above, which would point it at itself
+# roughly a third of the time.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "redis.fullname" . }}-headless
+  labels:
+    {{- include "redis.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: redis
+      protocol: TCP
+  selector:
+    {{- include "redis.selectorLabels" . | nindent 4 }}

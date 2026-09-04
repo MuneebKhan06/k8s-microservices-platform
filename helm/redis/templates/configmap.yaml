@@ -1,0 +1,79 @@
+# redis.conf, passed to redis-server as its config file by the StatefulSet.
+#
+# The two source repos configure Redis with command line flags in their
+# compose files (redis-server --appendonly yes). A file is used here
+# instead because the settings below are no longer just one flag, and a
+# config file is the difference between a reviewable record of why each
+# value is what it is and an unreadable argv.
+#
+# Nothing here is secret. This instance has no password at all, which is
+# discussed under requirepass at the bottom.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "redis.fullname" . }}-config
+  labels:
+    {{- include "redis.labels" . | nindent 4 }}
+data:
+  redis.conf: |
+    # Listen on all interfaces. The default binds loopback only, which
+    # inside a pod means nothing else in the cluster can reach it however
+    # correct the Service is. Same class of problem as postgresql's
+    # listen_addresses, and the same reason it is stated explicitly.
+    bind 0.0.0.0
+    port 6379
+
+    # protected-mode refuses connections from non-loopback clients when
+    # Redis has no password set. With bind 0.0.0.0 and no requirepass,
+    # leaving this on would reject every client in the cluster. It is
+    # turned off knowingly, and the safety it was providing is discussed
+    # under requirepass below.
+    protected-mode no
+
+    # Append only file. The queue lives in this instance, so a restart
+    # that loses recent writes loses jobs the API already accepted and
+    # acknowledged to the caller.
+    appendonly {{ .Values.config.appendOnly }}
+    appendfsync {{ .Values.config.appendFsync }}
+
+    # RDB snapshots stay on alongside AOF. They are not the durability
+    # mechanism here (AOF is), but a snapshot restores much faster than
+    # replaying a long append log, so keeping both means a restart uses
+    # the snapshot for the bulk and the AOF only for the tail.
+    save 900 1
+    save 300 10
+    save 60 10000
+    dir /data
+
+    # See values.yaml: a ceiling Redis knows about, set below the
+    # container memory limit so Redis refuses writes before the kernel
+    # OOM kills it and takes the unflushed AOF buffer with it.
+    maxmemory {{ .Values.config.maxMemory }}
+
+    # Load bearing. Every eviction policy other than noeviction deletes
+    # keys to stay under maxmemory, and there is no key in this instance
+    # that is safe to delete silently: a dropped jobs.* stream entry is a
+    # job that never runs, and a dropped blacklist:token entry is a
+    # revoked JWT that works again.
+    maxmemory-policy {{ .Values.config.maxMemoryPolicy }}
+
+    # Streams and consumer groups are the job queue's primitives, and
+    # XAUTOCLAIM on a crashed worker's pending entries is how those jobs
+    # get picked up again. Nothing here needs tuning for that; it is
+    # noted only so the next person does not go looking for a stream
+    # specific setting that does not exist.
+
+    # No requirepass, and that is a real gap rather than a decision.
+    #
+    # Neither app is configured to authenticate: both build their
+    # connection from REDIS_URL with no credentials in it, so turning
+    # auth on here would break them until their charts and config grow a
+    # password too. Until then the only thing standing between this
+    # instance and anything else in the cluster is that nothing outside
+    # infra is routed to it, and there is no NetworkPolicy enforcing even
+    # that yet. An unauthenticated Redis holding the revoked-token list
+    # is the weakest point in the platform as it currently stands.
+    #
+    # Fixing it is three coordinated changes: requirepass here from a
+    # Secret, a matching password in the two apps' Redis URLs, and a
+    # NetworkPolicy restricting infra to platform traffic.

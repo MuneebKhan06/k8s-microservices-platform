@@ -1,0 +1,16 @@
+apiVersion: v2
+name: redis
+description: Shared Redis StatefulSet backing the job queue, rate limiting and token blacklist
+type: application
+
+version: 0.1.0
+appVersion: "7"
+
+keywords:
+  - redis
+  - statefulset
+  - streams
+
+maintainers:
+  - name: Muneeb Sami Khan
+    email: muneebsamikhan@gmail.com

@@ -1,0 +1,101 @@
+# One shared Redis, same shape as the postgresql chart: the README lists
+# Redis once under infra, and the two services that use it write into
+# namespaces that do not collide (distributed-job-queue owns jobs.*,
+# api-gateway owns blacklist:* and its rate limit counters).
+#
+# What they store, though, is not the same kind of data, and the config in
+# templates/configmap.yaml is driven almost entirely by the stricter of the
+# two:
+#
+#   distributed-job-queue  jobs.high/normal/low/dlq streams. A job that is
+#                          accepted by the API and then lost from Redis is
+#                          a job that silently never runs.
+#   api-gateway            rate limit counters (cheap to lose), and the
+#                          revoked-JWT blacklist (expensive to lose: a
+#                          dropped blacklist entry makes a revoked token
+#                          valid again until it expires on its own).
+#
+# Neither of those tolerates eviction, which is what maxmemoryPolicy below
+# is about.
+
+image:
+  # Matches the redis:7-alpine both repos already pin in docker-compose.yml,
+  # for the same reason the postgresql chart matches postgres:16-alpine:
+  # the version the app code was actually exercised against.
+  repository: redis
+  tag: "7-alpine"
+  pullPolicy: IfNotPresent
+
+nameOverride: ""
+fullnameOverride: ""
+
+# The README targets 1 master and 2 replicas, with chaos Test 4 expecting
+# Sentinel to promote a replica within 15s. That needs replicaof wired
+# between pods and Sentinel deployed to do the promoting, and neither
+# exists yet. Installing this with replicaCount 3 as it stands would give
+# three unrelated Redis instances behind one Service, round-robining
+# writes between them: a job enqueued to pod 0 would be invisible to a
+# worker reading pod 1. Stays at 1 until replication is actually built.
+replicaCount: 1
+
+# Per the README's Decision 4 table: 100m/500m CPU, 128Mi/256Mi memory.
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+storage:
+  # Small, because the app side already bounds what lives here:
+  # STREAM_MAX_LENGTH trims the work streams at 100k entries and
+  # DLQ_MAX_LENGTH the dead letter queue at 50k. Without that trimming this
+  # number would have to grow with total jobs ever submitted.
+  size: 2Gi
+  # Empty uses the cluster default StorageClass (local-path per the build
+  # plan). Same node-affinity caveat as the postgresql chart: local-path
+  # binds the volume to one node, so losing that node loses this data.
+  className: ""
+
+config:
+  # Persistence is not optional here and both source repos already say so
+  # in their compose files. Redis without AOF keeps data in memory and
+  # snapshots periodically, so a restart between snapshots loses whatever
+  # arrived since the last one, which for the job queue means losing jobs
+  # the API already returned 202 for.
+  appendOnly: "yes"
+  # everysec, not always. `always` fsyncs on every write and would make
+  # each enqueue wait on a disk round trip; `everysec` caps the worst case
+  # loss at roughly one second of writes. That is the tradeoff the
+  # distributed-job-queue compose comment already accepted, kept here
+  # rather than quietly changed.
+  appendFsync: everysec
+
+  # Below the 256Mi container limit on purpose, not equal to it.
+  #
+  # With maxmemory unset, Redis grows until the kernel OOM kills the
+  # container, which drops the AOF write buffer along with the process.
+  # Giving Redis a ceiling it knows about means it hits its own limit
+  # first and refuses writes cleanly, so the failure surfaces as an
+  # error the enqueueing service can see and retry rather than as a
+  # process that vanished.
+  maxMemory: 200mb
+
+  # noeviction, which is Redis's default and is restated here because it
+  # is load bearing rather than incidental. Every LRU or random policy
+  # deletes keys to stay under maxmemory, and every key in this instance
+  # is one that must not be silently deleted: an evicted jobs.* entry is
+  # a lost job, and an evicted blacklist:token entry is a revoked JWT
+  # becoming valid again. Under memory pressure this instance should
+  # start refusing writes, not start dropping data.
+  maxMemoryPolicy: noeviction
+
+# 60s. Redis rewrites the AOF on a clean shutdown; being killed partway
+# through means the next start replays a longer log, and on an unclean
+# stop it may replay a truncated one.
+terminationGracePeriodSeconds: 60
+
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
