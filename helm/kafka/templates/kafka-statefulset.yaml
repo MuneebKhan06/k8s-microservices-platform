@@ -1,0 +1,123 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "kafka.fullname" . }}
+  labels:
+    {{- include "kafka.brokerSelectorLabels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "kafka.fullname" . }}-headless
+  replicas: {{ .Values.kafka.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "kafka.brokerSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "kafka.brokerSelectorLabels" . | nindent 8 }}
+    spec:
+      # 60s, not the api charts' 30s. A broker on SIGTERM flushes its log
+      # segments and deregisters from Zookeeper cleanly; cutting that off
+      # early means the next start replays segments that were mid-flush,
+      # the same class of tradeoff as postgresql's grace period and WAL
+      # replay.
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 1000
+      containers:
+        - name: kafka
+          image: "{{ .Values.kafka.image.repository }}:{{ .Values.kafka.image.tag }}"
+          imagePullPolicy: {{ .Values.kafka.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          ports:
+            - name: plaintext
+              containerPort: {{ .Values.kafka.plaintextPort }}
+              protocol: TCP
+          env:
+            # Fixed at 1 because there is exactly one broker. The specific
+            # thing that has to change to run more than one is this value:
+            # it needs to come from the pod's ordinal instead
+            # ($(echo $HOSTNAME | grep -o '[0-9]*$') is the usual pattern),
+            # because two brokers sharing a broker.id refuse to both stay
+            # registered in Zookeeper.
+            - name: KAFKA_BROKER_ID
+              value: "1"
+            - name: KAFKA_ZOOKEEPER_CONNECT
+              value: "{{ include "kafka.fullname" . }}-zookeeper:{{ .Values.zookeeper.clientPort }}"
+            # One listener, not the two event-ingestion-api's compose file
+            # needs. Compose splits host-facing and container-facing
+            # traffic because a laptop's docker CLI and a container on the
+            # compose network resolve "kafka" differently. Inside the
+            # cluster every client is a pod, so there is only one audience
+            # and only one listener is needed to serve it.
+            - name: KAFKA_LISTENERS
+              value: "PLAINTEXT://0.0.0.0:{{ .Values.kafka.plaintextPort }}"
+            # The Service name, not the pod's own hostname. At one
+            # replica this is a distinction without a difference; at more
+            # than one, a client connecting to the ClusterIP would be
+            # told to reconnect to whichever broker happens to own a
+            # given partition, so this has to resolve for every client
+            # regardless of which pod set it.
+            - name: KAFKA_ADVERTISED_LISTENERS
+              value: "PLAINTEXT://{{ include "kafka.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.kafka.plaintextPort }}"
+            - name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP
+              value: "PLAINTEXT:PLAINTEXT"
+            - name: KAFKA_INTER_BROKER_LISTENER_NAME
+              value: "PLAINTEXT"
+            - name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR
+              value: {{ .Values.kafka.offsetsTopicReplicationFactor | quote }}
+            - name: KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR
+              value: {{ .Values.kafka.transactionStateLogReplicationFactor | quote }}
+            - name: KAFKA_TRANSACTION_STATE_LOG_MIN_ISR
+              value: {{ .Values.kafka.transactionStateLogMinIsr | quote }}
+            - name: KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS
+              value: "0"
+            - name: KAFKA_AUTO_CREATE_TOPICS_ENABLE
+              value: {{ .Values.kafka.autoCreateTopicsEnable | quote }}
+            - name: KAFKA_LOG_DIRS
+              value: /var/lib/kafka/data
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/kafka/data
+          # kafka-broker-api-versions actually speaks the Kafka wire
+          # protocol to the broker, unlike a bare TCP check, which would
+          # report ready the moment the port opens even though the broker
+          # has not finished registering with Zookeeper yet. That gap
+          # matters here specifically because the topic-init job below is
+          # gated on this pod being Ready.
+          startupProbe:
+            exec:
+              command: ["kafka-broker-api-versions", "--bootstrap-server", "localhost:{{ .Values.kafka.plaintextPort }}"]
+            periodSeconds: 10
+            failureThreshold: 30
+          readinessProbe:
+            exec:
+              command: ["kafka-broker-api-versions", "--bootstrap-server", "localhost:{{ .Values.kafka.plaintextPort }}"]
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            failureThreshold: 3
+          livenessProbe:
+            exec:
+              command: ["kafka-broker-api-versions", "--bootstrap-server", "localhost:{{ .Values.kafka.plaintextPort }}"]
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.kafka.resources | nindent 12 }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "kafka.brokerSelectorLabels" . | nindent 10 }}
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.kafka.storage.className }}
+        storageClassName: {{ .Values.kafka.storage.className }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.kafka.storage.size }}

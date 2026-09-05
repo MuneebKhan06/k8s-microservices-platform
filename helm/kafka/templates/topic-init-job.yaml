@@ -1,0 +1,73 @@
+# Creates events.raw and events.dlq once, as a Helm hook Job, instead of
+# every producer or consumer pod attempting it on its own, the same
+# pattern as the migration Jobs in the distributed-job-queue and
+# api-gateway charts, applied to the one place this platform creates
+# infrastructure state outside a database.
+#
+# This is not a new idea introduced by this chart. event-ingestion-api's
+# own docker-compose.yml already has a kafka-init service running the
+# identical kafka-topics --create commands with no restart policy, with a
+# comment explaining that the one-shot behaviour is deliberate. This Job
+# is that same service, translated to a Helm hook because Kubernetes has
+# no equivalent of compose's service_completed_successfully dependency
+# gate to express "run once, then let dependents proceed."
+{{- if .Values.topicInit.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "kafka.fullname" . }}-topic-init
+  labels:
+    {{- include "kafka.brokerSelectorLabels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    # post-, not pre-, unlike the migration Jobs in the other two charts.
+    # Alembic needs the database to exist before pods start; topics need
+    # the broker itself running first, which only becomes true once the
+    # kafka StatefulSet from this same chart has been created and had
+    # time to pass its readiness probe. There is nothing to create topics
+    # on before that.
+    helm.sh/hook-weight: "5"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.topicInit.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.topicInit.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "kafka.brokerSelectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: topic-init
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+      containers:
+        - name: topic-init
+          image: "{{ .Values.kafka.image.repository }}:{{ .Values.kafka.image.tag }}"
+          imagePullPolicy: {{ .Values.kafka.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          command:
+            - "sh"
+            - "-c"
+            - |
+              set -e
+              {{- range .Values.topics }}
+              kafka-topics --bootstrap-server {{ include "kafka.fullname" $ }}:{{ $.Values.kafka.plaintextPort }} \
+                --create --if-not-exists --topic {{ .name }} \
+                --partitions {{ .partitions }} --replication-factor {{ .replicationFactor }} \
+                --config retention.ms={{ mul (index $.Values.kafka.retentionHours .retentionHoursKey) 3600000 }}
+              {{- end }}
+              echo "Topics ready:"
+              kafka-topics --bootstrap-server {{ include "kafka.fullname" . }}:{{ .Values.kafka.plaintextPort }} --list
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+{{- end }}
