@@ -1,7 +1,7 @@
 # One broker, one Zookeeper node. The README targets 3 and 3; getting there
 # needs each Kafka pod to derive a unique broker.id from its ordinal and
 # each Zookeeper pod to derive a unique myid while listing the other two in
-# its own zoo.cfg — neither exists yet, and a 3-node ensemble that does not
+# its own zoo.cfg. Neither exists yet, and a 3-node ensemble that does not
 # actually know about its other members is worse than an honest single
 # point of failure, same reasoning as the postgresql and redis charts.
 #
@@ -20,7 +20,7 @@ zookeeper:
 
   replicaCount: 1
 
-  # Not in the README's Decision 4 sizing table — that table covers seven
+  # Not in the README's Decision 4 sizing table. That table covers seven
   # components and Zookeeper is not one of them. Sized here from what
   # coordinating a single-broker Kafka actually costs, which is not much:
   # Zookeeper's own load is proportional to the size of the ensemble it
@@ -68,7 +68,7 @@ kafka:
 
   # Single broker, so every one of these is fixed at 1 regardless of the
   # image's default. A replication factor above the number of brokers
-  # fails topic creation outright, not gracefully — this is the value the
+  # fails topic creation outright, not gracefully. This is the value the
   # topic-init job below is built against, and it has to change together
   # with kafka.replicaCount whenever that becomes more than 1.
   offsetsTopicReplicationFactor: 1
@@ -95,7 +95,7 @@ kafka:
 
 # One entry per topic event-ingestion-api's own kafka-init compose service
 # already creates. Partition counts and replication factor here match that
-# service's kafka-topics --create invocation exactly — this is the same
+# service's kafka-topics --create invocation exactly. This is the same
 # command, run once by a Helm hook Job instead of a compose service with no
 # restart policy, for the identical reason: creating a topic is a one-time
 # action, not something every consumer or producer pod should attempt on

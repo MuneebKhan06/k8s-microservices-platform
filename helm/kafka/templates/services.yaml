@@ -1,0 +1,85 @@
+# Every Service for both components in this chart, kept in one file the
+# way the platform README's structure names it, rather than split per
+# component the way distributed-job-queue's api/worker services were.
+# That chart split because api and worker are reached differently
+# (routable vs headless-only); here all four entries are the same shape,
+# one routable and one headless per component.
+
+# What Kafka's KAFKA_ZOOKEEPER_CONNECT points at, and what
+# event-ingestion-api's chart would point at too if it ever talked to
+# Zookeeper directly (it does not; only Kafka does).
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "kafka.fullname" . }}-zookeeper
+  labels:
+    {{- include "kafka.zookeeperSelectorLabels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: client
+      port: {{ .Values.zookeeper.clientPort }}
+      targetPort: client
+      protocol: TCP
+  selector:
+    {{- include "kafka.zookeeperSelectorLabels" . | nindent 4 }}
+---
+# Required by the zookeeper StatefulSet's serviceName. Matters once
+# replicaCount is more than 1, the same way the postgresql and redis
+# charts' headless services do: an ensemble member has to be reachable by
+# its own stable name, not the load balanced Service above.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "kafka.fullname" . }}-zookeeper-headless
+  labels:
+    {{- include "kafka.zookeeperSelectorLabels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - name: client
+      port: {{ .Values.zookeeper.clientPort }}
+      targetPort: client
+      protocol: TCP
+  selector:
+    {{- include "kafka.zookeeperSelectorLabels" . | nindent 4 }}
+---
+# What event-ingestion-api's KAFKA_BOOTSTRAP_SERVERS already names:
+# kafka.infra.svc.cluster.local:9092. Resolving to exactly that hostname
+# requires this chart to be installed with release name "kafka":
+#   helm upgrade --install kafka ./helm/kafka -n infra
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "kafka.fullname" . }}
+  labels:
+    {{- include "kafka.brokerSelectorLabels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: plaintext
+      port: {{ .Values.kafka.plaintextPort }}
+      targetPort: plaintext
+      protocol: TCP
+  selector:
+    {{- include "kafka.brokerSelectorLabels" . | nindent 4 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "kafka.fullname" . }}-headless
+  labels:
+    {{- include "kafka.brokerSelectorLabels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - name: plaintext
+      port: {{ .Values.kafka.plaintextPort }}
+      targetPort: plaintext
+      protocol: TCP
+  selector:
+    {{- include "kafka.brokerSelectorLabels" . | nindent 4 }}

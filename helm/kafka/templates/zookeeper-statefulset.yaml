@@ -1,0 +1,104 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "kafka.fullname" . }}-zookeeper
+  labels:
+    {{- include "kafka.zookeeperSelectorLabels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "kafka.fullname" . }}-zookeeper-headless
+  replicas: {{ .Values.zookeeper.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "kafka.zookeeperSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "kafka.zookeeperSelectorLabels" . | nindent 8 }}
+    spec:
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 1000
+      containers:
+        - name: zookeeper
+          image: "{{ .Values.zookeeper.image.repository }}:{{ .Values.zookeeper.image.tag }}"
+          imagePullPolicy: {{ .Values.zookeeper.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          ports:
+            - name: client
+              containerPort: {{ .Values.zookeeper.clientPort }}
+              protocol: TCP
+          env:
+            - name: ZOOKEEPER_CLIENT_PORT
+              value: {{ .Values.zookeeper.clientPort | quote }}
+            - name: ZOOKEEPER_TICK_TIME
+              value: "2000"
+            # Confluent's images translate ZOOKEEPER_* env vars into
+            # zookeeper.properties entries, but that translation drops any
+            # property whose name starts with a digit, which
+            # zookeeper.4lw.commands.whitelist does. Passed as a JVM system
+            # property instead, exactly as event-ingestion-api's own
+            # docker-compose.yml already works around the same limitation.
+            # Without it, ZooKeeper 3.5+ refuses the ruok probe below
+            # outright and this StatefulSet never becomes ready.
+            - name: KAFKA_OPTS
+              value: "-Dzookeeper.4lw.commands.whitelist=ruok"
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/zookeeper/data
+            - name: log
+              mountPath: /var/lib/zookeeper/log
+          # ruok ("are you ok") is the same four-letter command
+          # event-ingestion-api's compose healthcheck uses, kept identical
+          # here rather than switched to something k8s-native: it is the
+          # one check that is meaningless unless the whitelist above
+          # actually took effect, so reusing it doubles as a check that
+          # KAFKA_OPTS was wired up correctly.
+          startupProbe:
+            exec:
+              command: ["sh", "-c", "echo ruok | nc -w 2 localhost {{ .Values.zookeeper.clientPort }} | grep imok"]
+            periodSeconds: 5
+            failureThreshold: 24
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "echo ruok | nc -w 2 localhost {{ .Values.zookeeper.clientPort }} | grep imok"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "echo ruok | nc -w 2 localhost {{ .Values.zookeeper.clientPort }} | grep imok"]
+            initialDelaySeconds: 20
+            periodSeconds: 15
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.zookeeper.resources | nindent 12 }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "kafka.zookeeperSelectorLabels" . | nindent 10 }}
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.zookeeper.storage.className }}
+        storageClassName: {{ .Values.zookeeper.storage.className }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.zookeeper.storage.size }}
+    - metadata:
+        name: log
+        labels:
+          {{- include "kafka.zookeeperSelectorLabels" . | nindent 10 }}
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.zookeeper.storage.className }}
+        storageClassName: {{ .Values.zookeeper.storage.className }}
+        {{- end }}
+        resources:
+          requests:
+            storage: 1Gi

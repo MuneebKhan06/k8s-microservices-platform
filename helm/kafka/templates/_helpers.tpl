@@ -32,7 +32,7 @@ app.kubernetes.io/part-of: k8s-microservices-platform
 {{/*
 Base selector labels. This chart holds two StatefulSets, kafka and
 zookeeper, so component-specific templates append
-app.kubernetes.io/component on top rather than redefining name/instance —
+app.kubernetes.io/component on top rather than redefining name/instance,
 same split as distributed-job-queue's api/worker selectors.
 */}}
 {{- define "kafka.selectorLabels" -}}
