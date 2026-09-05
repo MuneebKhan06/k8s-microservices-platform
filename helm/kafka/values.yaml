@@ -1,0 +1,120 @@
+# One broker, one Zookeeper node. The README targets 3 and 3; getting there
+# needs each Kafka pod to derive a unique broker.id from its ordinal and
+# each Zookeeper pod to derive a unique myid while listing the other two in
+# its own zoo.cfg. Neither exists yet, and a 3-node ensemble that does not
+# actually know about its other members is worse than an honest single
+# point of failure, same reasoning as the postgresql and redis charts.
+#
+# Zookeeper mode, not KRaft, matching event-ingestion-api's own
+# docker-compose.yml exactly rather than a topology the app was never
+# actually run against.
+
+zookeeper:
+  image:
+    # Same tag docker-compose.yml pins. Confluent version numbers track
+    # Kafka releases, not standalone Zookeeper versions, so this has to
+    # move in lockstep with kafka.image.tag below, not independently.
+    repository: confluentinc/cp-zookeeper
+    tag: "7.6.1"
+    pullPolicy: IfNotPresent
+
+  replicaCount: 1
+
+  # Not in the README's Decision 4 sizing table. That table covers seven
+  # components and Zookeeper is not one of them. Sized here from what
+  # coordinating a single-broker Kafka actually costs, which is not much:
+  # Zookeeper's own load is proportional to the size of the ensemble it
+  # coordinates and how often broker/topic metadata changes, not to
+  # message throughput.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  storage:
+    size: 2Gi
+    className: ""
+
+  clientPort: 2181
+
+kafka:
+  image:
+    repository: confluentinc/cp-kafka
+    tag: "7.6.1"
+    pullPolicy: IfNotPresent
+
+  replicaCount: 1
+
+  # Per the README's Decision 4 table: 500m/2000m CPU, 512Mi/2Gi memory.
+  # Kafka is the one infra component in that table sized closer to
+  # PostgreSQL than to Redis, because unlike Redis's bounded streams,
+  # retention here is time based (see retentionHours) rather than
+  # length based, and log segments accumulate independently of how
+  # promptly consumers keep up.
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: 2000m
+      memory: 2Gi
+
+  storage:
+    size: 10Gi
+    className: ""
+
+  # Single broker, so every one of these is fixed at 1 regardless of the
+  # image's default. A replication factor above the number of brokers
+  # fails topic creation outright, not gracefully. This is the value the
+  # topic-init job below is built against, and it has to change together
+  # with kafka.replicaCount whenever that becomes more than 1.
+  offsetsTopicReplicationFactor: 1
+  transactionStateLogReplicationFactor: 1
+  transactionStateLogMinIsr: 1
+
+  # False, matching event-ingestion-api's compose config. Auto-creation
+  # means a producer typo in a topic name silently creates a new topic
+  # with default partitioning instead of failing loudly, which is worse
+  # for a platform whose partition counts and replication factors are
+  # deliberately chosen per topic below.
+  autoCreateTopicsEnable: false
+
+  # How long a message stays on a topic regardless of consumer group lag.
+  # events.dlq is kept longer than events.raw because it is read by humans
+  # investigating a failure after the fact, the same reasoning
+  # distributed-job-queue's chart gives for its DLQ retention being longer
+  # than its main streams'.
+  retentionHours:
+    raw: 168    # 7 days
+    dlq: 720    # 30 days
+
+  plaintextPort: 9092
+
+# One entry per topic event-ingestion-api's own kafka-init compose service
+# already creates. Partition counts and replication factor here match that
+# service's kafka-topics --create invocation exactly. This is the same
+# command, run once by a Helm hook Job instead of a compose service with no
+# restart policy, for the identical reason: creating a topic is a one-time
+# action, not something every consumer or producer pod should attempt on
+# its own.
+topics:
+  - name: events.raw
+    partitions: 3
+    replicationFactor: 1
+    retentionHoursKey: raw
+  - name: events.dlq
+    partitions: 3
+    replicationFactor: 1
+    retentionHoursKey: dlq
+
+topicInit:
+  enabled: true
+  backoffLimit: 3
+  activeDeadlineSeconds: 180
+
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []

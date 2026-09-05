@@ -1,0 +1,16 @@
+apiVersion: v2
+name: kafka
+description: Zookeeper-mode Kafka backing event-ingestion-api's events.raw and events.dlq topics
+type: application
+
+version: 0.1.0
+appVersion: "7.6.1"
+
+keywords:
+  - kafka
+  - zookeeper
+  - statefulset
+
+maintainers:
+  - name: Muneeb Sami Khan
+    email: muneebsamikhan@gmail.com
