@@ -1,0 +1,150 @@
+# Values for the community kube-prometheus-stack chart, not a chart this
+# repo owns. The build plan is explicit about this for Day 8: hand-writing
+# Prometheus, Alertmanager and Grafana manifests means re-deriving the CRDs,
+# RBAC and sidecar wiring that this chart already gets right, for no benefit
+# specific to this platform. What this platform does need an opinion on is
+# in this file: which namespaces Prometheus watches, what it scrapes, and
+# what it does not bother scraping.
+#
+#   helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+#   helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+#     -n monitoring -f manifests/prometheus/kube-prometheus-stack-values.yaml \
+#     --set grafana.adminPassword="$(openssl rand -hex 16)"
+#
+# grafana.adminPassword is passed on the command line rather than committed
+# here for the same reason every application chart's secrets work this way:
+# the chart's own default ("prom-operator") is public knowledge the moment
+# anyone reads the kube-prometheus-stack source, which makes it exactly the
+# kind of default this platform has refused to ship elsewhere.
+
+prometheus:
+  prometheusSpec:
+    # The default serviceMonitorSelector only matches ServiceMonitors
+    # carrying a `release: <helm-release-name>` label, and the default
+    # serviceMonitorNamespaceSelector only looks in Prometheus's own
+    # namespace. Both defaults exist to keep one Prometheus from
+    # accidentally scraping objects meant for a different Prometheus
+    # instance in a large shared cluster, and both are exactly wrong for
+    # this platform, which has exactly one Prometheus and application
+    # ServiceMonitors living in `platform`, not `monitoring`.
+    #
+    # Leaving either default in place is the single most common reason a
+    # correctly written ServiceMonitor shows nothing in Prometheus's
+    # target list with no error anywhere to explain why: the object
+    # exists, the labels match the Service, and Prometheus simply never
+    # looked at it.
+    serviceMonitorSelector: {}
+    serviceMonitorNamespaceSelector: {}
+    podMonitorSelector: {}
+    podMonitorNamespaceSelector: {}
+
+    # 7 days. Not in the README's Decision 4 table, which does not cover
+    # the monitoring stack at all. Sized short deliberately for a lab
+    # cluster: Prometheus's on-disk size is roughly proportional to
+    # retention times cardinality, and long retention on local-path
+    # storage (bound to one node, per the postgresql and redis charts'
+    # own storage caveat) is retention this platform cannot actually
+    # protect against a node loss anyway.
+    retention: 7d
+
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: 1000m
+        memory: 1Gi
+
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 10Gi
+
+  # kubeadm binds the controller manager, scheduler and etcd's metrics
+  # endpoints to 127.0.0.1 by default, not the pod IP. The ServiceMonitors
+  # kube-prometheus-stack ships for those three components then show up as
+  # permanently down targets, which reads as a monitoring stack problem
+  # when it is actually a control plane binding this chart has no way to
+  # change from the outside. Fixing it means editing --bind-address in the
+  # static pod manifests on the control plane node itself, which is real
+  # control plane surgery and out of scope for what this file configures.
+  # Disabled rather than left as unexplained red targets.
+  kubeControllerManager:
+    enabled: false
+  kubeScheduler:
+    enabled: false
+  kubeEtcd:
+    enabled: false
+
+alertmanager:
+  alertmanagerSpec:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+
+  # No real receiver configured. There is no Slack workspace, PagerDuty
+  # account or SMTP relay for this lab platform to notify, and a routing
+  # tree pointing at credentials that do not exist would fail silently in
+  # a different way than this does: alerts still fire and are visible in
+  # the Alertmanager UI, they just do not page anyone. Left explicit
+  # rather than guessed at, since a fabricated receiver here would be
+  # exactly the kind of untested config this platform's ADRs argue against
+  # elsewhere.
+  config:
+    route:
+      receiver: "null"
+      group_by: ["alertname", "namespace"]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+    receivers:
+      - name: "null"
+
+grafana:
+  # kube-prometheus-stack's Grafana, not a hand-rolled Deployment. The
+  # platform README's project structure lists manifests/grafana/grafana.yaml
+  # as though it were authored separately; the build plan's actual Day 8
+  # instructions supersede that and bring Grafana in through this chart
+  # instead. manifests/grafana/dashboards-configmap.yaml (Day 13) still has
+  # a real job to do here: dashboards labeled grafana_dashboard: "1" are
+  # picked up automatically by this chart's sidecar, so that ConfigMap is
+  # additive to this values file, not a replacement for it.
+  persistence:
+    enabled: true
+    size: 2Gi
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      # Same reasoning as prometheus.prometheusSpec.serviceMonitorSelector
+      # above: dashboards live in platform's own namespaces eventually, not
+      # only inside monitoring's.
+      searchNamespace: ALL
+
+# Node level metrics. Kept on: Netdata (manifests/netdata/daemonset.yaml)
+# covers the same ground with a different, more detailed UI, and the two
+# are not mutually exclusive: node-exporter feeds Grafana dashboards and
+# Netdata is the operator's own dashboard for the same nodes. Removing
+# either without removing the dashboards or workflows that depend on it
+# would be the wrong kind of simplification.
+nodeExporter:
+  enabled: true
+
+kubeStateMetrics:
+  enabled: true
