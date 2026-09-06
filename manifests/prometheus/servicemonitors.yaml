@@ -1,0 +1,102 @@
+# One ServiceMonitor per scrapeable service, targeting the headless
+# "-metrics" Service each application chart already exposes rather than
+# the routable ClusterIP one. See any of those charts' service.yaml for
+# why: scraping through a load balanced Service would land on one
+# arbitrary replica per scrape and make per-instance rates meaningless.
+#
+# All four selectors match on `monitoring: scrape` plus
+# `app.kubernetes.io/name`, not on `app.kubernetes.io/instance`. These
+# manifests are plain YAML, not a Helm template, and are meant to keep
+# working regardless of what release name each chart was installed with.
+# Matching on the release name would silently stop scraping the moment
+# someone installed a chart under a different release name than whatever
+# was assumed here.
+#
+# Placed in the platform namespace, alongside the Services they target.
+# spec.namespaceSelector is left unset on all four, which defaults a
+# ServiceMonitor to only matching Services in its own namespace. Correct
+# here, since every one of these Services already lives in platform too.
+# Prometheus finding these objects at all, regardless of that, depends on
+# manifests/prometheus/kube-prometheus-stack-values.yaml's
+# serviceMonitorNamespaceSelector being widened to all namespaces; without
+# that override these ServiceMonitors would be invisible to a Prometheus
+# installed in monitoring, silently.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: event-ingestion-api
+  namespace: platform
+  labels:
+    app.kubernetes.io/part-of: k8s-microservices-platform
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: event-ingestion-api
+      monitoring: scrape
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 15s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: distributed-job-queue-api
+  namespace: platform
+  labels:
+    app.kubernetes.io/part-of: k8s-microservices-platform
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: distributed-job-queue
+      app.kubernetes.io/component: api
+      monitoring: scrape
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 15s
+---
+# Separate from the api ServiceMonitor above despite sharing a chart,
+# because the worker's metrics carry worker_id labels the api's do not, and
+# because component: api / component: worker is exactly the distinction
+# that keeps this selector from matching both Services at once.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: distributed-job-queue-worker
+  namespace: platform
+  labels:
+    app.kubernetes.io/part-of: k8s-microservices-platform
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: distributed-job-queue
+      app.kubernetes.io/component: worker
+      monitoring: scrape
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 15s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: api-gateway
+  namespace: platform
+  labels:
+    app.kubernetes.io/part-of: k8s-microservices-platform
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: api-gateway
+      monitoring: scrape
+  endpoints:
+    - port: metrics
+      path: /metrics
+      # Shorter than the other three. api-gateway's RED metrics are what
+      # its own HPA scales on (http_requests_per_second, via
+      # prometheus-adapter) and what the platform's chaos tests measure
+      # zero-downtime against, so a faster scrape here means less lag
+      # between a real traffic change and Prometheus, and everything
+      # downstream of it, seeing it.
+      interval: 10s
