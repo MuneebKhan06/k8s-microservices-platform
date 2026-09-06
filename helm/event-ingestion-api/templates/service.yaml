@@ -34,6 +34,12 @@ metadata:
   labels:
     {{- include "event-ingestion-api.labels" . | nindent 4 }}
     app.kubernetes.io/component: metrics
+    # Added for consistency with the metrics services in the other three
+    # application charts, all of which carry this label, and which is what
+    # manifests/prometheus/servicemonitors.yaml's selectors actually match
+    # on. Without it, this was the one service the ServiceMonitor pattern
+    # used everywhere else in the platform would have silently missed.
+    monitoring: scrape
 spec:
   type: ClusterIP
   clusterIP: None

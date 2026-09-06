@@ -1,0 +1,149 @@
+# Every expression below is written against a metric name confirmed by
+# reading the source of the project that exposes it (app/core/metrics.py,
+# gateway/metrics/prometheus.py, worker/metrics.py), not guessed from what
+# a metric with that name would plausibly be called. A PromQL expression
+# against a metric that does not exist returns no data rather than an
+# error, so a wrong name here fails silently: the rule loads, evaluates to
+# nothing, and never fires, forever, with nothing in any log to say so.
+#
+# All four go nowhere real yet. See
+# manifests/prometheus/kube-prometheus-stack-values.yaml's alertmanager
+# section for why: there is no Slack, PagerDuty or email destination
+# configured for this lab platform, so every alert below resolves to
+# visible-in-the-Alertmanager-UI, not paged-to-anyone.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: platform-alert-rules
+  namespace: platform
+  labels:
+    app.kubernetes.io/part-of: k8s-microservices-platform
+spec:
+  groups:
+    - name: scrape-targets
+      rules:
+        # `up` is Prometheus's own synthetic metric, emitted for every
+        # target regardless of what that target's application exposes, so
+        # this one rule covers all four ServiceMonitors without needing to
+        # know anything about any of the four applications.
+        - alert: ServiceTargetDown
+          expr: up{namespace="platform"} == 0
+          # 5m, not immediate. A rolling deploy takes a pod out of the
+          # scrape targets for less time than that on its own, and firing
+          # on every deploy is the kind of alert that trains everyone to
+          # ignore this one specifically.
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Prometheus has not been able to scrape {{ $labels.job }} for 5m"
+            description: "instance {{ $labels.instance }} in job {{ $labels.job }} is reporting up == 0."
+
+    - name: api-gateway
+      rules:
+        # gateway_errors_total and gateway_requests_total both carry the
+        # same upstream/method labels, so this ratio is per upstream, not
+        # platform-wide: a single struggling backend does not get diluted
+        # by two healthy ones in the same expression.
+        - alert: GatewayHighErrorRate
+          expr: |
+            sum(rate(gateway_errors_total[5m])) by (upstream)
+            /
+            sum(rate(gateway_requests_total[5m])) by (upstream)
+            > 0.05
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "api-gateway error rate above 5% for upstream {{ $labels.upstream }}"
+            description: "{{ $labels.upstream }} has returned errors on more than 5% of requests over the last 5 minutes."
+
+        # gateway_circuit_breaker_state is 0=closed, 1=open, 2=half_open.
+        # An open breaker means the gateway has already stopped sending
+        # this upstream traffic, which is the system working as designed,
+        # but it is also exactly the state chaos Test 6 (network
+        # partition) is checking for, and worth surfacing here rather
+        # than only in that test's own output.
+        - alert: GatewayCircuitBreakerOpen
+          expr: gateway_circuit_breaker_state == 1
+          for: 1m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Circuit breaker open for {{ $labels.upstream }}"
+            description: "api-gateway has stopped routing traffic to {{ $labels.upstream }} after repeated failures."
+
+    - name: distributed-job-queue
+      rules:
+        # jobs_dead_total only increments when a job exhausts its retry
+        # budget or fails permanently, so any increase at all is worth a
+        # human looking at the DLQ, unlike a threshold-based alert that
+        # would require deciding in advance how many dead jobs is normal.
+        - alert: JobsRoutedToDeadLetterQueue
+          expr: increase(jobs_dead_total[15m]) > 0
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.job_type }} jobs reaching the DLQ ({{ $labels.reason }})"
+            description: "At least one job of type {{ $labels.job_type }} was routed to the dead letter queue in the last 15 minutes."
+
+        # queue_depth is messages not yet delivered to any worker, per
+        # stream. 500 is well above the HPA's own targetAverageValue of 50
+        # per worker at maxReplicas 12 (600), so this fires only once the
+        # queue has grown past what autoscaling is configured to absorb on
+        # its own, not merely while HPA is doing its job.
+        - alert: JobQueueBacklogGrowing
+          expr: queue_depth > 500
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.stream }} backlog above 500 for 10m"
+            description: "queue_depth for {{ $labels.stream }} has stayed above 500, past what the worker HPA's maxReplicas is sized to drain."
+
+    - name: event-ingestion-api
+      rules:
+        # events_publish_failures_total increments when the API cannot
+        # publish to Kafka, which the API surfaces to its own caller as
+        # HTTP 503. Any occurrence means callers are seeing failures right
+        # now, not a threshold worth tuning.
+        - alert: EventPublishFailures
+          expr: increase(events_publish_failures_total[10m]) > 0
+          labels:
+            severity: critical
+          annotations:
+            summary: "event-ingestion-api failing to publish to Kafka"
+            description: "At least one event failed to publish to Kafka in the last 10 minutes, returned to the caller as HTTP 503."
+
+    - name: kubernetes-workloads
+      rules:
+        # kube_pod_container_status_waiting_reason is a kube-state-metrics
+        # series, not anything this platform's own applications expose,
+        # which is what makes it a safe generic check: it fires the same
+        # way for a bad image tag as for a bug in application startup
+        # code, without needing app-specific knowledge either way.
+        - alert: PodCrashLooping
+          expr: kube_pod_container_status_waiting_reason{reason="CrashLoopBackOff", namespace=~"platform|infra|monitoring"} == 1
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "{{ $labels.namespace }}/{{ $labels.pod }} is crash looping"
+            description: "Container {{ $labels.container }} has been in CrashLoopBackOff for at least 5 minutes."
+
+        # An HPA sitting at its own ceiling is not a failure by itself,
+        # but it is the platform running out of the one lever HPA has:
+        # the next unit of load has nowhere to go without maxReplicas
+        # itself changing, which is a decision for a person, not the
+        # controller.
+        - alert: HPAAtMaxReplicas
+          expr: |
+            kube_horizontalpodautoscaler_status_current_replicas{namespace="platform"}
+            >=
+            kube_horizontalpodautoscaler_spec_max_replicas{namespace="platform"}
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.horizontalpodautoscaler }} has been at maxReplicas for 15m"
+            description: "{{ $labels.horizontalpodautoscaler }} in {{ $labels.namespace }} has been running at its configured maximum for at least 15 minutes."
