@@ -69,12 +69,25 @@ probes:
 # and this chart agree on: the gateway's load is directly the request rate
 # it receives, unlike distributed-job-queue's api, which was moved onto this
 # same signal for the same reason after deviating from its own table row.
+#
+# Named gateway_http_requests_per_second rather than the generic
+# http_requests_per_second distributed-job-queue's api HPA still references.
+# That name is not backed by any real metric yet (that chart's API exposes
+# job lifecycle counters, not a request counter) and prometheus-adapter has
+# no rule for it. If this chart's rule were published under the generic
+# name instead, distributed-job-queue's api HPA would stop showing
+# <unknown> the moment this rule existed, not because it started measuring
+# its own traffic, but because it would silently start reading this
+# service's request rate as if it were its own. An HPA that is honestly
+# stuck at minReplicas is a visible, debuggable gap; one quietly scaling on
+# the wrong service's numbers is not. Scoping the name is what keeps fixing
+# one HPA from breaking the other.
 autoscaling:
   enabled: true
   minReplicas: 2
   maxReplicas: 10
   externalMetric:
-    name: http_requests_per_second
+    name: gateway_http_requests_per_second
     target: api-gateway
     targetAverageValue: "100"
 
