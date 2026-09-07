@@ -1,0 +1,111 @@
+# Values for the community prometheus-adapter chart, the same "use the
+# maintained chart, do not hand-write the Deployment" call the Day 8
+# manifests already made for Prometheus itself.
+#
+#   helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+#   helm upgrade --install prometheus-adapter prometheus-community/prometheus-adapter \
+#     -n monitoring -f manifests/prometheus/adapter-values.yaml
+#
+# Verify a rule actually surfaced before trusting any HPA that reads it:
+#   kubectl get --raw "/apis/external.metrics.k8s.io/v1beta1" | jq .
+# scripts/verify-custom-metrics.sh checks all four external metric names
+# this platform's HPAs reference, the two rules below plus the two
+# documented as absent, and reports each one found or missing in one pass.
+# A name absent from that list is not a slow HPA, it is an HPA that will
+# sit at minReplicas forever with no error anywhere to say why.
+#
+# Two rules below, not four. Every HPA in this platform's charts asks for
+# one of four external metrics; only two are backed by a real Prometheus
+# series today:
+#
+#   redis_stream_length_total          real  (distributed-job-queue worker)
+#   gateway_http_requests_per_second   real  (api-gateway)
+#   kafka_consumer_lag                 absent (event-ingestion-api)
+#   http_requests_per_second           absent (distributed-job-queue api)
+#
+# kafka_consumer_lag has no rule because nothing exports it. event-
+# ingestion-api's consumer only counts events persisted, duplicates
+# skipped and DLQ writes (consumer/metrics.py). None of those is lag, and
+# lag specifically needs either the consumer itself tracking committed
+# offset vs. partition high-water mark, or a separate exporter (Burrow,
+# kafka-lag-exporter) reading that from Kafka independently. Writing a rule
+# named kafka_consumer_lag against a metric that does not exist would make
+# the HPA look wired up right up until someone checked whether it ever
+# scaled.
+#
+# http_requests_per_second (distributed-job-queue's api) has no rule for
+# the same reason: that service's app/core/metrics.py exposes job
+# lifecycle counters, not a request counter. See
+# helm/api-gateway/values.yaml's autoscaling comment for why this chart's
+# own, real request-rate metric was deliberately named
+# gateway_http_requests_per_second instead of reusing that generic name:
+# publishing a rule under the shared name would not have fixed the
+# job-queue HPA, it would have handed it this service's traffic instead.
+#
+# Both gaps are real work belonging to their own repos (event-ingestion-api,
+# distributed-job-queue), not something this values file can paper over.
+
+prometheus:
+  # kube-prometheus-stack installed as release "kube-prometheus-stack" in
+  # namespace monitoring, per manifests/prometheus/kube-prometheus-stack-values.yaml's
+  # own install command. The chart's fullname convention makes the
+  # Prometheus Service exactly this name; a different release name here
+  # requires updating this url to match, and there is nothing that checks
+  # for that mismatch other than the adapter failing to reach Prometheus
+  # at all.
+  url: http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local
+  port: 9090
+
+rules:
+  # False rather than the chart's default true. The default rule set
+  # auto-generates a custom metric for every Kubernetes-labelled series it
+  # can find a plausible mapping for, which is convenient and is exactly
+  # the kind of unreviewed, auto-generated PromQL the build plan's own Day
+  # 9 warning is about: "wrong query is wrong scaling." Every metric an
+  # HPA in this platform actually reads is enumerated explicitly below
+  # instead.
+  default: false
+
+  external:
+    # Backs distributed-job-queue's worker HPA
+    # (helm/distributed-job-queue/values.yaml, worker.autoscaling).
+    #
+    # Sums stream_length across all three priority streams into one
+    # series, exactly what that HPA's own comment says has to happen here
+    # rather than in the HPA spec: an HPA reads one scalar per external
+    # metric query, so combining jobs.high, jobs.normal and jobs.low has
+    # to be this rule's job.
+    #
+    # No <<.LabelMatchers>> in metricsQuery, and that omission is
+    # deliberate, not an oversight. The HPA's selector sends queue: "jobs",
+    # a label that does not exist on the real stream_length series (its
+    # only label is `stream`). Substituting LabelMatchers into the query
+    # here would produce stream_length{queue="jobs"}, which matches
+    # nothing and reports <unknown> despite the underlying metric being
+    # perfectly healthy. There is exactly one queue in this platform, so
+    # the query does not need a selector to disambiguate: it is written
+    # to always mean the one thing it could mean.
+    - seriesQuery: 'stream_length{stream=~"jobs\.(high|normal|low)"}'
+      metricsQuery: 'sum(stream_length{stream=~"jobs\.(high|normal|low)"})'
+      name:
+        as: "redis_stream_length_total"
+
+    # Backs api-gateway's HPA (helm/api-gateway/values.yaml, autoscaling).
+    #
+    # gateway_requests_total is labelled by upstream, method and
+    # status_code, none of which is the `service` label the HPA's selector
+    # sends. Same reasoning as above: LabelMatchers is left out of the
+    # query on purpose, since there is one gateway and this rule always
+    # means its total request rate.
+    #
+    # rate() over 2m rather than 1m: at a 15s scrape interval (this
+    # service's own ServiceMonitor interval), a 1m rate() window is only 4
+    # samples, which is short enough that a single delayed scrape visibly
+    # moves the result. 2m halves that noise at the cost of the HPA
+    # reacting on slightly stale-averaged traffic, an acceptable trade for
+    # a signal that also has its own 30s scale-up stabilization window on
+    # top of it.
+    - seriesQuery: 'gateway_requests_total'
+      metricsQuery: 'sum(rate(gateway_requests_total[2m]))'
+      name:
+        as: "gateway_http_requests_per_second"
