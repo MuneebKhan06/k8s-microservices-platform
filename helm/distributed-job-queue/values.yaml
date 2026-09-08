@@ -78,8 +78,14 @@ api:
   # a number it does not control would mean it scales up while sitting idle
   # whenever workers fall behind, and stays flat under a genuine request
   # spike if the queue happens to be short. Request rate is the api-gateway
-  # pattern and is the correct one here too. Deviation from the table noted
-  # in DEVLOG.
+  # pattern and is the correct one here too.
+  #
+  # Not backed by a real metric yet: this service's own request counter
+  # does not exist (app/core/metrics.py only counts job lifecycle events),
+  # so http_requests_per_second has no prometheus-adapter rule and this
+  # HPA reports <unknown>, staying at minReplicas until that changes. See
+  # manifests/prometheus/adapter-values.yaml for the full accounting of
+  # which of this platform's HPA metrics are real versus documented gaps.
   autoscaling:
     enabled: true
     minReplicas: 2
@@ -88,6 +94,14 @@ api:
       name: http_requests_per_second
       target: distributed-job-queue-api
       targetAverageValue: "50"
+
+  # See event-ingestion-api/values.yaml's podDisruptionBudget comment for
+  # the full reasoning: maxUnavailable rather than minAvailable so this
+  # stays correct across the HPA's whole 2-8 replica range instead of
+  # being tuned for one end of it.
+  podDisruptionBudget:
+    enabled: true
+    maxUnavailable: 1
 
 worker:
   # 2 min, 12 max per the README table. Highest ceiling of any component:
@@ -146,6 +160,14 @@ worker:
       name: redis_stream_length_total
       queue: jobs
       targetAverageValue: "50"
+
+  # Matters more here than for the api: this is exactly the protection
+  # the build plan's Day 11 node-drain chaos test is meant to check.
+  # Without it, kubectl drain could evict every worker replica scheduled
+  # on the drained node in one pass, with nothing to stop it partway.
+  podDisruptionBudget:
+    enabled: true
+    maxUnavailable: 1
 
   # Longer than the api's. A worker mid-job on SIGTERM finishes the current
   # batch before exiting; cutting that off early is how a job ends up

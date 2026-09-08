@@ -213,6 +213,15 @@ strategy:
   maxUnavailable: 0
   maxSurge: 1
 
+# Matters most in this chart of anywhere in the platform: every request to
+# any backend passes through this Deployment first, so a node drain taking
+# out every gateway replica at once does not degrade one service, it takes
+# the whole platform's entry point down. Same maxUnavailable: 1 reasoning
+# as event-ingestion-api's own podDisruptionBudget comment.
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
+
 podAntiAffinity:
   enabled: true
 

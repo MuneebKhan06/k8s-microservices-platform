@@ -1,0 +1,15 @@
+# See the podDisruptionBudget comment in values.yaml for why this exists
+# and why maxUnavailable rather than minAvailable.
+{{- if .Values.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "event-ingestion-api.fullname" . }}
+  labels:
+    {{- include "event-ingestion-api.labels" . | nindent 4 }}
+spec:
+  maxUnavailable: {{ .Values.podDisruptionBudget.maxUnavailable }}
+  selector:
+    matchLabels:
+      {{- include "event-ingestion-api.selectorLabels" . | nindent 6 }}
+{{- end }}
