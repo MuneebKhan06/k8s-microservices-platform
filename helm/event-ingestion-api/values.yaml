@@ -122,6 +122,21 @@ strategy:
   maxUnavailable: 0
   maxSurge: 1
 
+# Guards against voluntary disruptions, which the rolling update strategy
+# above says nothing about: a node drain or a cluster-autoscaler eviction
+# does not go through the Deployment's own maxUnavailable at all. Without
+# this, kubectl drain on a node holding both replicas would evict both at
+# once, since nothing tells it that leaves the service down.
+#
+# maxUnavailable: 1 rather than a minAvailable count or percentage, because
+# it stays correct across the HPA's whole range: at minReplicas 2 it
+# guarantees one pod stays up, and at maxReplicas 8 it still only ever
+# lets one go at a time, so a fixed minAvailable chosen for one end of
+# that range would either be too strict or too loose at the other.
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
+
 # Give the app time to finish in flight requests and commit Kafka offsets
 # before SIGKILL.
 terminationGracePeriodSeconds: 30
