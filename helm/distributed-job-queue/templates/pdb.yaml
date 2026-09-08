@@ -1,0 +1,32 @@
+# Two PodDisruptionBudgets, one per Deployment, matching the api/worker
+# split every other multi-component template in this chart uses. See the
+# podDisruptionBudget comments next to api.autoscaling and
+# worker.autoscaling in values.yaml for why each exists and why worker's
+# matters more.
+{{- if .Values.api.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "distributed-job-queue.fullname" . }}-api
+  labels:
+    {{- include "distributed-job-queue.apiSelectorLabels" . | nindent 4 }}
+spec:
+  maxUnavailable: {{ .Values.api.podDisruptionBudget.maxUnavailable }}
+  selector:
+    matchLabels:
+      {{- include "distributed-job-queue.apiSelectorLabels" . | nindent 6 }}
+{{- end }}
+{{- if .Values.worker.podDisruptionBudget.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "distributed-job-queue.fullname" . }}-worker
+  labels:
+    {{- include "distributed-job-queue.workerSelectorLabels" . | nindent 4 }}
+spec:
+  maxUnavailable: {{ .Values.worker.podDisruptionBudget.maxUnavailable }}
+  selector:
+    matchLabels:
+      {{- include "distributed-job-queue.workerSelectorLabels" . | nindent 6 }}
+{{- end }}
