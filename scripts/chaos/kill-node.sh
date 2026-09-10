@@ -50,10 +50,13 @@ if kubectl get node "$NODE" -o jsonpath='{.metadata.labels}' \
   exit 1
 fi
 
+# grep -w Ready on the STATUS column: matches "Ready", not "NotReady"
+# (no word boundary before "Ready" inside "NotReady"), and does not
+# depend on the Ready condition being last in the conditions array the
+# way a jsonpath conditions[-1] check would.
 READY_WORKERS="$(kubectl get nodes \
-  -l '!node-role.kubernetes.io/control-plane' \
-  -o jsonpath='{range .items[?(@.status.conditions[-1].type=="Ready")]}{.metadata.name}{"\n"}{end}' \
-  | grep -c .)"
+  -l '!node-role.kubernetes.io/control-plane' --no-headers 2>/dev/null \
+  | grep -cw Ready || true)"
 if [[ "$READY_WORKERS" -le 1 ]]; then
   echo "Only $READY_WORKERS worker node(s) Ready. Draining the last one" >&2
   echo "leaves nowhere for its pods to go and is an outage, not a test." >&2
