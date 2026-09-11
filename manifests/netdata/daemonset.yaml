@@ -1,0 +1,199 @@
+# Node-level metrics with Netdata's own real-time dashboard, one pod per
+# node. Not a replacement for node-exporter, which is already installed by
+# manifests/prometheus/kube-prometheus-stack-values.yaml: the two overlap
+# in what they measure and serve different jobs. node-exporter feeds
+# Grafana dashboards and this platform's own PrometheusRules; Netdata is
+# the thing an operator opens directly on a node during an incident for
+# second-by-second detail without waiting on a Prometheus scrape interval.
+# Removing either without removing what depends on it would be the wrong
+# kind of simplification, which is the same reasoning the
+# kube-prometheus-stack values file already gives for keeping node-exporter
+# once Netdata is added.
+#
+# Hand-authored rather than vendored or delegated to Netdata's own Helm
+# chart, unlike ingress-nginx and kube-prometheus-stack: a single
+# DaemonSet plus a Service is small enough that hand-writing it is less
+# work than reviewing a chart's defaults, which was not true for either of
+# those two.
+#
+# The one thing worth being direct about: every other pod in this platform
+# runs with capabilities dropped entirely and a non-root, immutable-ish
+# footprint. This DaemonSet does neither. Netdata's job is reading process
+# and system state that belongs to the host, not to itself, and doing that
+# needs SYS_PTRACE (to read other processes' state) and access to the
+# host's /proc and /sys, which is a real, broader grant than anything else
+# in this platform gets. That is not an oversight to fix later; it is what
+# a node-level observability agent actually requires, named here instead
+# of left for someone to notice by diffing this file against every other
+# one.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: netdata
+  namespace: monitoring
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: netdata
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: netdata
+    app.kubernetes.io/part-of: k8s-microservices-platform
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: netdata
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: netdata
+        monitoring: scrape
+    spec:
+      serviceAccountName: netdata
+      # Shares the host's PID namespace so Netdata can see and name every
+      # process on the node, not just the ones in its own pod. Without
+      # this the per-process views (and the cgroup-to-container mapping
+      # this platform's own pods would otherwise show up under) are
+      # unavailable.
+      hostPID: true
+      hostNetwork: false
+      containers:
+        - name: netdata
+          image: netdata/netdata:v1.47.5
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            # Not privileged: true, which is what a lot of reference
+            # Netdata deployments reach for by default. SYS_PTRACE covers
+            # reading other processes' state; SYS_ADMIN is what the
+            # cgroup and network namespace introspection needs. Neither
+            # is "drop all", both are real and named rather than reaching
+            # for the blanket flag because it is easier.
+            capabilities:
+              add:
+                - SYS_PTRACE
+                - SYS_ADMIN
+            readOnlyRootFilesystem: false
+          ports:
+            - name: http
+              containerPort: 19999
+              protocol: TCP
+          env:
+            # Tells Netdata its host mounts live under /host, matching
+            # the volumeMounts below, rather than reading its own
+            # container's /proc and /sys and reporting the pod's cgroup
+            # limits as if they were the node's.
+            - name: NETDATA_HOST_PREFIX
+              value: /host
+          volumeMounts:
+            # Host filesystems Netdata reads system state from. All three
+            # mounted read-only: this agent observes the node, it has no
+            # business writing to it.
+            - name: proc
+              mountPath: /host/proc
+              readOnly: true
+            - name: sys
+              mountPath: /host/sys
+              readOnly: true
+            - name: os-release
+              mountPath: /host/etc/os-release
+              readOnly: true
+            # containerd, not docker.sock. This cluster's runtime is
+            # containerd (see the DEVLOG-era decision on dockershim's
+            # removal); mounting a Docker socket that does not exist on
+            # these nodes would just be a permanently failing mount.
+            - name: containerd-sock
+              mountPath: /host/run/containerd/containerd.sock
+              readOnly: true
+            # Netdata's own working state: its local round-robin metrics
+            # database and cache. emptyDir rather than a hostPath, so a
+            # pod restart starts clean instead of accumulating node-local
+            # state this platform has no backup or rotation story for.
+            - name: netdata-lib
+              mountPath: /var/lib/netdata
+            - name: netdata-cache
+              mountPath: /var/cache/netdata
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 300m
+              memory: 256Mi
+      volumes:
+        - name: proc
+          hostPath:
+            path: /proc
+        - name: sys
+          hostPath:
+            path: /sys
+        - name: os-release
+          hostPath:
+            path: /etc/os-release
+        - name: containerd-sock
+          hostPath:
+            path: /run/containerd/containerd.sock
+            type: Socket
+        - name: netdata-lib
+          emptyDir: {}
+        - name: netdata-cache
+          emptyDir: {}
+      tolerations:
+        # DaemonSets exist to run everywhere, control plane included: a
+        # control-plane node having no observability agent because it is
+        # tainted is a blind spot, not a security boundary worth keeping.
+        - key: node-role.kubernetes.io/control-plane
+          effect: NoSchedule
+---
+# Headless, matching every other metrics Service in this platform: Netdata
+# runs one independent agent per node, and scraping through a
+# load-balanced ClusterIP would mean Prometheus seeing an arbitrary node's
+# numbers on each scrape instead of one target per node.
+apiVersion: v1
+kind: Service
+metadata:
+  name: netdata
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: netdata
+    monitoring: scrape
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - name: http
+      port: 19999
+      targetPort: http
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: netdata
+---
+# Netdata exposes its own metrics in Prometheus exposition format at
+# /api/v1/allmetrics, not at the conventional /metrics path, which is why
+# this could not simply be added to manifests/prometheus/servicemonitors.yaml
+# without also carrying the path and query parameters below. Kept here
+# instead, next to the component it belongs to, rather than splitting one
+# component's definition across two files in two directories.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: netdata
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: k8s-microservices-platform
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: netdata
+      monitoring: scrape
+  endpoints:
+    - port: http
+      path: /api/v1/allmetrics
+      params:
+        format:
+          - prometheus
+        help:
+          - "no"
+        types:
+          - "no"
+      interval: 30s
