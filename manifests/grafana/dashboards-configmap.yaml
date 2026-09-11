@@ -1,0 +1,425 @@
+# Dashboards for kube-prometheus-stack's Grafana sidecar to load
+# automatically. manifests/prometheus/kube-prometheus-stack-values.yaml
+# configures that sidecar with label grafana_dashboard: "1" and
+# searchNamespace: ALL, which is what makes a plain ConfigMap in this
+# namespace turn into a dashboard with no manual import step.
+#
+# Every panel query below is one of the metric names already verified
+# against each project's own source (app/core/metrics.py,
+# gateway/metrics/prometheus.py, worker/metrics.py, consumer/metrics.py)
+# while writing manifests/prometheus/alert-rules.yaml and
+# adapter-values.yaml, not guessed from what a metric with that name would
+# plausibly be called. gateway_request_duration_seconds in particular is
+# not what its Python variable name (request_duration_seconds) would
+# suggest; every _bucket suffix below exists because these are Histograms,
+# and histogram_quantile needs the bucket series, not the metric's own
+# base name.
+#
+# Unrendered against a live Grafana. The panel and dashboard JSON validates
+# as JSON and follows the schema version 39 model, but whether every panel
+# looks right (units, legend formatting, layout) is unverified until
+# someone opens Grafana against a cluster with real data flowing through
+# these metrics.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: platform-dashboards
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+    app.kubernetes.io/part-of: k8s-microservices-platform
+data:
+  api-gateway.json: |
+    {
+      "title": "api-gateway",
+      "uid": "platform-api-gateway",
+      "tags": [
+        "k8s-microservices-platform",
+        "api-gateway"
+      ],
+      "timezone": "utc",
+      "schemaVersion": 39,
+      "version": 1,
+      "refresh": "30s",
+      "time": {
+        "from": "now-1h",
+        "to": "now"
+      },
+      "panels": [
+        {
+          "id": 1,
+          "title": "Request rate by upstream",
+          "type": "timeseries",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 0
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps"
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "expr": "sum(rate(gateway_requests_total[5m])) by (upstream)",
+              "legendFormat": "{{upstream}}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "title": "Error rate by upstream",
+          "type": "timeseries",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 0
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps"
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "expr": "sum(rate(gateway_errors_total[5m])) by (upstream)",
+              "legendFormat": "{{upstream}}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "title": "p95 request duration",
+          "type": "timeseries",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 8
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.95, sum(rate(gateway_request_duration_seconds_bucket[5m])) by (le, upstream))",
+              "legendFormat": "{{upstream}}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "title": "p95 upstream response time",
+          "type": "timeseries",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 8
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.95, sum(rate(gateway_upstream_duration_seconds_bucket[5m])) by (le, upstream))",
+              "legendFormat": "{{upstream}}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "id": 5,
+          "title": "Circuit breaker state (0=closed 1=open 2=half_open)",
+          "type": "timeseries",
+          "gridPos": {
+            "h": 8,
+            "w": 24,
+            "x": 0,
+            "y": 16
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "expr": "gateway_circuit_breaker_state",
+              "legendFormat": "{{upstream}}",
+              "refId": "A"
+            }
+          ]
+        }
+      ]
+    }
+  distributed-job-queue.json: |
+    {
+      "title": "distributed-job-queue",
+      "uid": "platform-distributed-job-queue",
+      "tags": [
+        "k8s-microservices-platform",
+        "distributed-job-queue"
+      ],
+      "timezone": "utc",
+      "schemaVersion": 39,
+      "version": 1,
+      "refresh": "30s",
+      "time": {
+        "from": "now-1h",
+        "to": "now"
+      },
+      "panels": [
+        {
+          "id": 1,
+          "title": "Queue depth by stream (not yet delivered)",
+          "type": "timeseries",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 0
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "expr": "queue_depth",
+              "legendFormat": "{{stream}}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "title": "Stream length by stream (delivered or not)",
+          "type": "timeseries",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 0
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "expr": "stream_length",
+              "legendFormat": "{{stream}}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "title": "Jobs submitted vs completed (rate)",
+          "type": "timeseries",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 8
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ops"
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "expr": "sum(rate(jobs_submitted_total[5m])) by (job_type)",
+              "legendFormat": "submitted {{job_type}}",
+              "refId": "A"
+            },
+            {
+              "expr": "sum(rate(jobs_completed_total[5m])) by (job_type)",
+              "legendFormat": "completed {{job_type}}",
+              "refId": "B"
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "title": "Jobs failed and dead-lettered (rate)",
+          "type": "timeseries",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 8
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ops"
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "expr": "sum(rate(jobs_failed_total[5m])) by (job_type)",
+              "legendFormat": "failed {{job_type}}",
+              "refId": "A"
+            },
+            {
+              "expr": "sum(rate(jobs_dead_total[5m])) by (job_type, reason)",
+              "legendFormat": "dead {{job_type}}/{{reason}}",
+              "refId": "B"
+            }
+          ]
+        },
+        {
+          "id": 5,
+          "title": "p95 handler execution time",
+          "type": "timeseries",
+          "gridPos": {
+            "h": 8,
+            "w": 24,
+            "x": 0,
+            "y": 16
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.95, sum(rate(job_duration_seconds_bucket[5m])) by (le, job_type))",
+              "legendFormat": "{{job_type}}",
+              "refId": "A"
+            }
+          ]
+        }
+      ]
+    }
+  event-ingestion-api.json: |
+    {
+      "title": "event-ingestion-api",
+      "uid": "platform-event-ingestion-api",
+      "tags": [
+        "k8s-microservices-platform",
+        "event-ingestion-api"
+      ],
+      "timezone": "utc",
+      "schemaVersion": 39,
+      "version": 1,
+      "refresh": "30s",
+      "time": {
+        "from": "now-1h",
+        "to": "now"
+      },
+      "panels": [
+        {
+          "id": 1,
+          "title": "API: accepted vs duplicate vs publish failure (rate)",
+          "type": "timeseries",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 0
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ops"
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "expr": "rate(events_accepted_total[5m])",
+              "legendFormat": "accepted (202)",
+              "refId": "A"
+            },
+            {
+              "expr": "rate(events_duplicates_total[5m])",
+              "legendFormat": "duplicate (409)",
+              "refId": "B"
+            },
+            {
+              "expr": "rate(events_publish_failures_total[5m])",
+              "legendFormat": "publish failure (503)",
+              "refId": "C"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "title": "Consumer: persisted vs duplicate-skipped (rate)",
+          "type": "timeseries",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 0
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ops"
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "expr": "rate(events_persisted_total[5m])",
+              "legendFormat": "persisted",
+              "refId": "A"
+            },
+            {
+              "expr": "rate(events_duplicates_skipped_total[5m])",
+              "legendFormat": "duplicate skipped",
+              "refId": "B"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "title": "Consumer: DLQ writes by reason (rate)",
+          "type": "timeseries",
+          "gridPos": {
+            "h": 8,
+            "w": 24,
+            "x": 0,
+            "y": 8
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ops"
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "expr": "sum(rate(dlq_writes_total[5m])) by (reason)",
+              "legendFormat": "{{reason}}",
+              "refId": "A"
+            }
+          ]
+        }
+      ]
+    }
