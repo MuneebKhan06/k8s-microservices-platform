@@ -1,0 +1,156 @@
+# Enforces the namespace isolation the README's Decision 6 already argues
+# for and the redis chart's own redis.conf comment already names as
+# missing: platform can reach infra, monitoring can only scrape, nothing
+# outside platform reaches infra directly.
+#
+# These objects apply cleanly and change nothing on this cluster today.
+# Flannel, the CNI this cluster runs (see the build plan's Day 2 CNI
+# choice), does not enforce NetworkPolicy at all. kubectl apply will
+# succeed, kubectl get networkpolicy will list every rule below, and
+# every connection these rules claim to block will keep working exactly
+# as before, with nothing in any log to say why. That is the same finding
+# scripts/chaos/network-partition.sh already had to work around for the
+# same reason, and it is the reason that script does not use
+# NetworkPolicy either.
+#
+# Committed anyway, not held back until the CNI changes, because this is
+# the actual intended access model, not a draft of one. The moment this
+# cluster moves to a NetworkPolicy-enforcing CNI (Calico or Cilium are the
+# two the build plan names), these rules become real with no further
+# authoring: enforcement is the CNI's job, not this file's.
+#
+# Namespace selectors below rely on kubernetes.io/metadata.name, which the
+# API server has stamped onto every namespace automatically since
+# Kubernetes 1.21. No label needs adding to manifests/namespaces.yaml or
+# to ingress-nginx's own vendored Namespace object for these to match.
+
+# --- infra: default deny, then two narrow allows ---
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: infra
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-from-platform
+  namespace: infra
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: platform
+      ports:
+        - port: 5432   # postgresql
+        - port: 6379   # redis
+        - port: 9092   # kafka
+---
+# Read-only in name only until an infra-side exporter actually exists.
+# None of the postgresql, redis or kafka charts run a Prometheus exporter
+# sidecar yet (postgres_exporter, redis_exporter, the Kafka JMX exporter),
+# so nothing in infra currently listens on a scrape port for monitoring
+# to reach in the first place. This rule is the access path Decision 6
+# calls for, written ahead of the exporters that will need it, not a
+# claim that scraping is happening today.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-scrape-from-monitoring
+  namespace: infra
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+
+# --- platform: default deny, then three allows ---
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: platform
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+---
+# Needed the moment the namespace default-denies: api-gateway proxies to
+# event-ingestion-api and distributed-job-queue-api, both in this same
+# namespace, and a default-deny policy blocks same-namespace traffic just
+# as readily as traffic from anywhere else unless it is allowed back in
+# explicitly.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-within-platform
+  namespace: platform
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: platform
+---
+# The only path into this platform from outside it. Everything api-gateway
+# fronts is reachable this way and nowhere else; the two backend services'
+# own routable Services exist for api-gateway to call, not for an external
+# client to reach directly.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-from-ingress-controller
+  namespace: platform
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: api-gateway
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - port: 8000
+---
+# Matches the four ServiceMonitors in
+# manifests/prometheus/servicemonitors.yaml exactly: every application
+# service's metrics port, and nothing else, which is what "monitoring
+# reads, it does not write" means enforced rather than asserted.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-scrape-from-monitoring
+  namespace: platform
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: 8000  # event-ingestion-api, distributed-job-queue api, api-gateway
+        - port: 9100  # distributed-job-queue worker
