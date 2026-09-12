@@ -39,5 +39,11 @@ spec:
       port: 6379
       targetPort: redis
       protocol: TCP
+    {{- if .Values.metrics.enabled }}
+    - name: metrics
+      port: {{ .Values.metrics.port }}
+      targetPort: metrics
+      protocol: TCP
+    {{- end }}
   selector:
     {{- include "redis.selectorLabels" . | nindent 4 }}
