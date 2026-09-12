@@ -5,6 +5,14 @@
 #
 # Cross-namespace lookups need the FQDN, so application config points at
 # postgresql.infra.svc.cluster.local rather than a bare service name.
+#
+# pod-security.kubernetes.io/enforce=restricted on both platform and
+# infra: every container in every chart already runs
+# allowPrivilegeEscalation: false, capabilities dropped to ALL, and
+# runAsNonRoot true (see each StatefulSet/Deployment's own
+# securityContext), which is what "restricted" actually checks for. This
+# label makes that a cluster-enforced floor instead of a convention every
+# future template has to remember to repeat correctly by hand.
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -12,6 +20,9 @@ metadata:
   labels:
     app.kubernetes.io/part-of: k8s-microservices-platform
     tier: application
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
 ---
 # Stateful services live here on their own. Nothing in platform or
 # monitoring gets write access to this namespace once NetworkPolicy lands.
@@ -22,10 +33,23 @@ metadata:
   labels:
     app.kubernetes.io/part-of: k8s-microservices-platform
     tier: data
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
 ---
 # Prometheus, Grafana, prometheus-adapter and the Netdata DaemonSet.
 # These need read access across every namespace to scrape, and no write
 # access anywhere.
+#
+# baseline, not restricted, and that is the "named exception to the pod
+# security baseline" the Netdata DaemonSet commit this labels covers
+# already refers to: Netdata's SYS_PTRACE capability and host /proc and
+# /sys mounts (see manifests/netdata/daemonset.yaml's own comment) are
+# baseline-level access, not restricted-level. Setting this namespace to
+# restricted would block that DaemonSet from ever admitting, and setting
+# it to privileged to work around that would also stop enforcing anything
+# against kube-prometheus-stack's own pods, which do not need the
+# exception Netdata does.
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -33,3 +57,6 @@ metadata:
   labels:
     app.kubernetes.io/part-of: k8s-microservices-platform
     tier: observability
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/audit: baseline
+    pod-security.kubernetes.io/warn: baseline

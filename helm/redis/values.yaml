@@ -99,3 +99,23 @@ terminationGracePeriodSeconds: 60
 podAnnotations: {}
 nodeSelector: {}
 tolerations: []
+
+# redis_exporter as a sidecar, same reasoning as the postgresql chart's
+# postgres_exporter: a sidecar always reports its own pod, where a
+# separate Deployment behind the Service would report one replica chosen
+# at random per scrape. No REDIS_PASSWORD env needed since this instance
+# has no requirepass set yet; see templates/configmap.yaml's own comment
+# on that gap.
+metrics:
+  enabled: true
+  image:
+    repository: oliver006/redis_exporter
+    tag: "v1.62.0"
+  port: 9121
+  resources:
+    requests:
+      cpu: 50m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi

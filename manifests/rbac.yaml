@@ -1,0 +1,118 @@
+# The RBAC half of README Decision 6, which the namespace split exists to
+# make possible: a developer can get edit access to application pods
+# without that access reaching the database. NetworkPolicy in
+# manifests/networkpolicies.yaml enforces the same boundary at the network
+# layer; this file is the identical boundary at the API layer.
+#
+# Bound to a Group, not a User, because this cluster's kubeadm setup has no
+# identity provider issuing per-user client certs with a CN yet. Binding to
+# a group means the moment one exists (OIDC, or certs signed with an
+# organization field), granting a real person this access is one binding
+# on their group, not a new Role per person. Until then these Roles exist
+# and bind to nothing, the same "committed anyway, not held back" reasoning
+# manifests/networkpolicies.yaml's own header already used for the same
+# kind of not-yet-connected access control.
+
+# --- platform: edit ---
+# ClusterRole "edit" already ships with every Kubernetes cluster (it is one
+# of the default aggregated ClusterRoles), so this only needs a namespaced
+# binding, not a Role definition of its own.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: platform-developers-edit
+  namespace: platform
+subjects:
+  - kind: Group
+    name: platform-developers
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: edit
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# --- monitoring: view ---
+# Read-only dashboards and Prometheus queries, no ability to edit an alert
+# rule or restart Grafana from this binding.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: platform-developers-view
+  namespace: monitoring
+subjects:
+  - kind: Group
+    name: platform-developers
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: view
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# --- infra: nothing ---
+# No Role or RoleBinding at all is the point, not an omission. Decision 6's
+# whole argument was that a single namespace could not express "pods yes,
+# database no". The absence of a platform-developers binding in this
+# namespace is what makes that true; there is no ClusterRole called "none"
+# to bind, because not binding one already means that.
+
+# --- CI: a narrow ServiceAccount for the deploy workflow ---
+# .github/workflows/ci.yml's deploy job (when a real cluster and runner are
+# wired to it) needs to run `helm upgrade --install` across platform and
+# infra without holding cluster-admin. get/list/watch/create/update/patch
+# covers every object kind deploy-all.sh applies (Deployments, StatefulSets,
+# Services, ConfigMaps, Secrets, Jobs, HPAs); delete is intentionally
+# excluded; a rollback removing a resource is a `helm rollback`, run by a
+# human, not this account.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ci-deployer
+  namespace: platform
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ci-deployer
+rules:
+  - apiGroups: ["", "apps", "batch", "autoscaling", "networking.k8s.io"]
+    resources:
+      - deployments
+      - statefulsets
+      - services
+      - configmaps
+      - secrets
+      - jobs
+      - horizontalpodautoscalers
+      - ingresses
+      - pods
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ci-deployer
+  namespace: platform
+subjects:
+  - kind: ServiceAccount
+    name: ci-deployer
+    namespace: platform
+roleRef:
+  kind: ClusterRole
+  name: ci-deployer
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ci-deployer
+  namespace: infra
+subjects:
+  - kind: ServiceAccount
+    name: ci-deployer
+    namespace: platform
+roleRef:
+  kind: ClusterRole
+  name: ci-deployer
+  apiGroup: rbac.authorization.k8s.io

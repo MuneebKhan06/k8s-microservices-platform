@@ -118,3 +118,22 @@ topicInit:
 podAnnotations: {}
 nodeSelector: {}
 tolerations: []
+
+# JMX Prometheus exporter, the last of the three infra scrape gaps named
+# in manifests/networkpolicies.yaml's allow-scrape-from-monitoring
+# comment (postgres_exporter and redis_exporter closed the other two).
+# Kafka's own metrics are exposed over JMX, not an HTTP /metrics endpoint,
+# so closing this gap means attaching a Java agent to the broker's JVM
+# rather than adding a sidecar that talks to it over a socket the way the
+# postgresql and redis exporters do.
+metrics:
+  enabled: true
+  port: 5556
+  # Pulls the released jar via an initContainer into an emptyDir the
+  # broker container also mounts, rather than baking it into a custom
+  # Kafka image. Keeps kafka.image.tag matching docker-compose.yml exactly
+  # (see the comment above zookeeper.image.tag) instead of forking it to
+  # add one file.
+  jmxExporterImage:
+    repository: bitnami/jmx-exporter
+    tag: "0.20.0"

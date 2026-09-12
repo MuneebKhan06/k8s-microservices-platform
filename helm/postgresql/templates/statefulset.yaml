@@ -115,6 +115,35 @@ spec:
             failureThreshold: 3
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+        {{- if .Values.metrics.enabled }}
+        - name: postgres-exporter
+          image: "{{ .Values.metrics.image.repository }}:{{ .Values.metrics.image.tag }}"
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          env:
+            # Connects over the Pod's own loopback-equivalent address
+            # rather than through the Service, so this exporter always
+            # reports its own pod's Postgres and never another replica's
+            # by way of load balancing. sslmode=disable because this is an
+            # in-pod connection over localhost, not a network hop.
+            - name: DATA_SOURCE_NAME
+              value: "postgresql://{{ .Values.superuser.username }}:$(POSTGRES_PASSWORD)@localhost:5432/postgres?sslmode=disable"
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.existingSecret | default (printf "%s-secret" (include "postgresql.fullname" .)) }}
+                  key: POSTGRES_PASSWORD
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+              protocol: TCP
+          resources:
+            {{- toYaml .Values.metrics.resources | nindent 12 }}
+        {{- end }}
       volumes:
         - name: config
           configMap:
