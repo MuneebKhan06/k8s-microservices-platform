@@ -1,0 +1,69 @@
+# One ResourceQuota per namespace, sized against the sum of the requests
+# and limits already committed in each chart's values.yaml (README Decision
+# 4), not guessed independently of them. A namespace quota that disagrees
+# with what its own charts request is worse than no quota: `helm upgrade`
+# would start failing with an opaque "exceeded quota" error on a values
+# change nobody connected to the quota.
+#
+# Sums below use each chart's replicaCount at the top of its scale range
+# (README's Architecture table: api-gateway 10 max, event-ingestion-api 8
+# max, distributed-job-queue 8 max, job-worker 12 max), not the current
+# minReplicas. A quota sized at min would block the HPA from ever reaching
+# max, which defeats the point of autoscaling being in this platform at
+# all.
+#
+# infra intentionally excludes the exporter sidecars' 50m/100m and
+# 32Mi/64Mi from its headline numbers below; they are folded into the
+# rounding, not itemized, because they are two small fixed additions per
+# StatefulSet rather than something that scales with replicas.
+
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: platform-quota
+  namespace: platform
+spec:
+  hard:
+    requests.cpu: "3"
+    requests.memory: 4Gi
+    limits.cpu: "15"
+    limits.memory: 20Gi
+    pods: "60"
+---
+# infra stays at replicaCount 1 across postgresql, redis and kafka today
+# (see each chart's own values.yaml comment on why), so this quota has far
+# less headroom above current usage than platform's does. Widen it before
+# raising any infra replicaCount, not after: a quota this project forgot to
+# widen would make that change fail exactly like a values mismatch would.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: infra-quota
+  namespace: infra
+spec:
+  hard:
+    requests.cpu: "1500m"
+    requests.memory: 2Gi
+    limits.cpu: "5"
+    limits.memory: 6Gi
+    pods: "15"
+---
+# monitoring runs kube-prometheus-stack (Prometheus, Alertmanager, the
+# Grafana Deployment), prometheus-adapter, and the Netdata DaemonSet, none
+# of which are charts this repo owns the values for the way it owns
+# platform and infra. Left generous rather than tuned against specific
+# numbers for that reason: this quota exists to stop a runaway Prometheus
+# retention setting from starving the two namespaces that matter more, not
+# to enforce a sizing methodology this repo does not control the inputs to.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: monitoring-quota
+  namespace: monitoring
+spec:
+  hard:
+    requests.cpu: "2"
+    requests.memory: 4Gi
+    limits.cpu: "6"
+    limits.memory: 8Gi
+    pods: "30"
