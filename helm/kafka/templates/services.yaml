@@ -81,5 +81,11 @@ spec:
       port: {{ .Values.kafka.plaintextPort }}
       targetPort: plaintext
       protocol: TCP
+    {{- if .Values.metrics.enabled }}
+    - name: metrics
+      port: {{ .Values.metrics.port }}
+      targetPort: metrics
+      protocol: TCP
+    {{- end }}
   selector:
     {{- include "kafka.brokerSelectorLabels" . | nindent 4 }}

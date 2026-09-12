@@ -1,0 +1,36 @@
+# Rules for the JMX exporter javaagent attached to the broker container in
+# kafka-statefulset.yaml. Uses the exporter's own default Kafka rule set
+# (unmodified from the upstream jmx_prometheus_javaagent example for
+# kafka-2_0_0.yml) rather than a hand-picked subset: this is a lab
+# platform's only broker, not a multi-tenant cluster where cardinality
+# needs trimming, so there is no cost yet to scraping everything the agent
+# already knows how to name well.
+{{- if .Values.metrics.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "kafka.fullname" . }}-jmx-exporter-config
+  labels:
+    {{- include "kafka.brokerSelectorLabels" . | nindent 4 }}
+data:
+  kafka-jmx-exporter.yml: |
+    lowercaseOutputName: true
+    rules:
+      - pattern: "kafka.server<type=(.+), name=(.+)PerSec\\w*, topic=(.+)><>Count"
+        name: kafka_server_$1_$2_total
+        labels:
+          topic: "$3"
+      - pattern: "kafka.server<type=(.+), name=(.+)PerSec\\w*><>Count"
+        name: kafka_server_$1_$2_total
+      - pattern: "kafka.server<type=(.+), name=(.+)><>Value"
+        name: kafka_server_$1_$2
+      - pattern: "kafka.controller<type=(.+), name=(.+)><>Value"
+        name: kafka_controller_$1_$2
+      - pattern: "kafka.network<type=(.+), name=(.+)><>Value"
+        name: kafka_network_$1_$2
+      - pattern: "kafka.log<type=(.+), name=(.+), topic=(.+), partition=(.+)><>Value"
+        name: kafka_log_$1_$2
+        labels:
+          topic: "$3"
+          partition: "$4"
+{{- end }}

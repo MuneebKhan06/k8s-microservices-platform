@@ -1,8 +1,8 @@
-# ServiceMonitors for the two exporter sidecars added to the postgresql
-# and redis charts. Split from servicemonitors.yaml rather than appended to
+# ServiceMonitors for the exporters added to the postgresql, redis and
+# kafka charts. Split from servicemonitors.yaml rather than appended to
 # it, because that file's own header comment is specific to the platform
-# namespace and the four application services in it; these two live in
-# infra and target a different pair of charts entirely.
+# namespace and the four application services in it; these three live in
+# infra and target a different set of charts entirely.
 #
 # Both selectors match on chart-level labels (app.kubernetes.io/name plus
 # app.kubernetes.io/instance), not on a "monitoring: scrape" label the way
@@ -45,6 +45,32 @@ spec:
     matchLabels:
       app.kubernetes.io/name: redis
       app.kubernetes.io/instance: redis
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 30s
+---
+# Targets the headless Service in helm/kafka/templates/services.yaml,
+# which scrapes the one broker pod directly rather than the routable
+# Service. At kafka.replicaCount 1 today the two would return identical
+# results, but this is the same headless-over-routable choice
+# servicemonitors.yaml's header already explains for the application
+# charts, kept consistent now rather than fixed later once a second
+# broker makes the routable Service's random pod selection actually
+# matter.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: kafka
+  namespace: infra
+  labels:
+    app.kubernetes.io/part-of: k8s-microservices-platform
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kafka
+      app.kubernetes.io/instance: kafka
+      app.kubernetes.io/component: broker
   endpoints:
     - port: metrics
       path: /metrics

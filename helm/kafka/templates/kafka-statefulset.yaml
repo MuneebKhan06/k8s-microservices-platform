@@ -24,6 +24,23 @@ spec:
       securityContext:
         runAsNonRoot: true
         fsGroup: 1000
+      {{- if .Values.metrics.enabled }}
+      initContainers:
+        # Copies the javaagent jar and its dependencies out of the
+        # jmx-exporter image into an emptyDir the broker container also
+        # mounts. Runs once per pod start, not continuously: this image
+        # is never the running process, only the source of one file.
+        - name: jmx-exporter-agent
+          image: "{{ .Values.metrics.jmxExporterImage.repository }}:{{ .Values.metrics.jmxExporterImage.tag }}"
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - cp /opt/bitnami/jmx-exporter/jmx_prometheus_javaagent.jar /agent/jmx_prometheus_javaagent.jar
+          volumeMounts:
+            - name: jmx-agent
+              mountPath: /agent
+      {{- end }}
       containers:
         - name: kafka
           image: "{{ .Values.kafka.image.repository }}:{{ .Values.kafka.image.tag }}"
@@ -37,7 +54,22 @@ spec:
             - name: plaintext
               containerPort: {{ .Values.kafka.plaintextPort }}
               protocol: TCP
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+              protocol: TCP
+            {{- end }}
           env:
+            {{- if .Values.metrics.enabled }}
+            # KAFKA_OPTS, not KAFKA_JMX_OPTS: the cp-kafka image's own
+            # launch script already appends KAFKA_JMX_OPTS to the JVM's
+            # standard JMX remote flags for the *cluster-internal* JMX
+            # port, which this platform does not open at all. KAFKA_OPTS
+            # is passed straight to the JVM launch line unconditionally,
+            # which is what attaching an out-of-process javaagent needs.
+            - name: KAFKA_OPTS
+              value: "-javaagent:/opt/jmx-exporter/jmx_prometheus_javaagent.jar={{ .Values.metrics.port }}:/etc/jmx-exporter/kafka-jmx-exporter.yml"
+            {{- end }}
             # Fixed at 1 because there is exactly one broker. The specific
             # thing that has to change to run more than one is this value:
             # it needs to come from the pod's ordinal instead
@@ -83,6 +115,14 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /var/lib/kafka/data
+            {{- if .Values.metrics.enabled }}
+            - name: jmx-agent
+              mountPath: /opt/jmx-exporter
+              readOnly: true
+            - name: jmx-exporter-config
+              mountPath: /etc/jmx-exporter
+              readOnly: true
+            {{- end }}
           # kafka-broker-api-versions actually speaks the Kafka wire
           # protocol to the broker, unlike a bare TCP check, which would
           # report ready the moment the port opens even though the broker
@@ -108,6 +148,14 @@ spec:
             failureThreshold: 3
           resources:
             {{- toYaml .Values.kafka.resources | nindent 12 }}
+      {{- if .Values.metrics.enabled }}
+      volumes:
+        - name: jmx-agent
+          emptyDir: {}
+        - name: jmx-exporter-config
+          configMap:
+            name: {{ include "kafka.fullname" . }}-jmx-exporter-config
+      {{- end }}
   volumeClaimTemplates:
     - metadata:
         name: data
