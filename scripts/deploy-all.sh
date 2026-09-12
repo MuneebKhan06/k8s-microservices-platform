@@ -110,6 +110,7 @@ echo "== monitoring: ServiceMonitors and alert rules =="
 # ServiceMonitor and PrometheusRule CRDs these objects use come from that
 # stack, not from anything installed above.
 kubectl apply -f manifests/prometheus/servicemonitors.yaml
+kubectl apply -f manifests/prometheus/infra-servicemonitors.yaml
 kubectl apply -f manifests/prometheus/alert-rules.yaml
 
 echo
