@@ -139,3 +139,35 @@ metrics:
     limits:
       cpu: 100m
       memory: 64Mi
+
+# Nightly pg_dumpall onto its own PVC. See backup-cronjob.yaml for why
+# pg_dumpall rather than pg_dump per database, and why the target is a
+# separate volume rather than the StatefulSet's own data volume.
+backup:
+  enabled: true
+  # 02:00 daily, cluster local time. Chosen to land outside any load test
+  # or chaos test run, both of which are things a human runs deliberately
+  # during working hours per the build plan, not something scheduled to
+  # collide with a 2am dump.
+  schedule: "0 2 * * *"
+  retentionDays: 7
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  # Generous relative to how long a database this size actually takes to
+  # dump; exists to fail loudly if pg_dumpall hangs rather than to bound
+  # normal completion time.
+  activeDeadlineSeconds: 900
+  storage:
+    # 7 days of retention at this instance's current data size comfortably
+    # fits well under the 5Gi the data PVC itself gets; sized independently
+    # anyway rather than reusing storage.size above, since backup and live
+    # data have different growth curves.
+    size: 5Gi
+    className: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi

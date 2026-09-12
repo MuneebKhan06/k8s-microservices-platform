@@ -1,0 +1,101 @@
+# pg_dump on a schedule, onto its own PVC rather than the data volume the
+# StatefulSet already owns. The whole point of a backup is surviving the
+# loss of that volume; writing dumps next to the thing they back up would
+# make it a copy, not a backup, and local-path-provisioner's own node
+# pinning (see values.yaml's storage.className comment) makes that
+# distinction concrete here, not theoretical.
+#
+# pg_dumpall, not pg_dump per database: this chart hosts three databases
+# under one instance (see values.yaml's top comment), and pg_dumpall is
+# the one command that also captures the three roles and their
+# permissions PUBLIC's revoked CONNECT relies on, not just table data.
+# Restoring three separate pg_dump files would recreate the data without
+# recreating the isolation between them.
+{{- if .Values.backup.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "postgresql.fullname" . }}-backups
+  labels:
+    {{- include "postgresql.labels" . | nindent 4 }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  {{- if .Values.backup.storage.className }}
+  storageClassName: {{ .Values.backup.storage.className }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.backup.storage.size }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "postgresql.fullname" . }}-backup
+  labels:
+    {{- include "postgresql.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.backup.schedule | quote }}
+  # Never overlaps a slow dump with the next scheduled one; a second
+  # pg_dumpall starting before the first finishes would contend for the
+  # same PVC and the same connection slots for no benefit.
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: {{ .Values.backup.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.backup.failedJobsHistoryLimit }}
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: {{ .Values.backup.activeDeadlineSeconds }}
+      template:
+        spec:
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            fsGroup: 999
+          containers:
+            - name: pg-dump
+              image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+              envFrom:
+                - secretRef:
+                    name: {{ .Values.existingSecret | default (printf "%s-secret" (include "postgresql.fullname" .)) }}
+              # PGPASSWORD from POSTGRES_PASSWORD, which the Secret already
+              # provides under that name for the server container itself;
+              # pg_dumpall reads the client-side PGPASSWORD variable, not
+              # POSTGRES_PASSWORD, so this env entry bridges the two names
+              # rather than duplicating the secret key.
+              env:
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.existingSecret | default (printf "%s-secret" (include "postgresql.fullname" .)) }}
+                      key: POSTGRES_PASSWORD
+              command:
+                - sh
+                - -c
+                - |
+                  set -eu
+                  ts=$(date +%Y%m%d-%H%M%S)
+                  pg_dumpall -h {{ include "postgresql.fullname" . }} -U {{ .Values.superuser.username }} \
+                    --file "/backups/pg_dumpall-${ts}.sql"
+                  # Retention here, not a separate CronJob: cleanup that
+                  # can silently stop running (a second CronJob nobody
+                  # notices failed) leaves a filling PVC as the only
+                  # symptom. Doing it in the same Job that just proved it
+                  # can talk to Postgres keeps failure visible in one
+                  # place.
+                  find /backups -name 'pg_dumpall-*.sql' -mtime +{{ .Values.backup.retentionDays }} -delete
+              volumeMounts:
+                - name: backups
+                  mountPath: /backups
+              resources:
+                {{- toYaml .Values.backup.resources | nindent 16 }}
+          volumes:
+            - name: backups
+              persistentVolumeClaim:
+                claimName: {{ include "postgresql.fullname" . }}-backups
+{{- end }}
