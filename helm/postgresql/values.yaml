@@ -116,3 +116,26 @@ terminationGracePeriodSeconds: 60
 podAnnotations: {}
 nodeSelector: {}
 tolerations: []
+
+# postgres_exporter as a sidecar, not a separate Deployment, so it always
+# reads the same pod's local Postgres over a loopback-equivalent connection
+# rather than picking one replica behind the Service at random. Referenced
+# by manifests/networkpolicies.yaml's allow-scrape-from-monitoring rule in
+# infra, which was written ahead of this existing and is what makes it
+# reachable the moment it does.
+metrics:
+  enabled: true
+  image:
+    repository: prometheuscommunity/postgres-exporter
+    tag: "v0.15.0"
+  port: 9187
+  # DATA_SOURCE_NAME needs a real password, so the exporter authenticates
+  # as the superuser rather than adding a fourth app-shaped role for a
+  # process that only ever runs SELECT against pg_stat_*.
+  resources:
+    requests:
+      cpu: 50m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi

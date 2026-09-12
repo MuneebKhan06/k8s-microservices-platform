@@ -43,5 +43,11 @@ spec:
       port: 5432
       targetPort: postgresql
       protocol: TCP
+    {{- if .Values.metrics.enabled }}
+    - name: metrics
+      port: {{ .Values.metrics.port }}
+      targetPort: metrics
+      protocol: TCP
+    {{- end }}
   selector:
     {{- include "postgresql.selectorLabels" . | nindent 4 }}
